@@ -1,15 +1,18 @@
-module Main exposing (Model, init, Msg, update, view, subscriptions)
+module Main exposing (Model, Msg, init, subscriptions, update, view)
 
-import Html exposing (..)
 import Browser
 import Browser.Navigation as Nav
-import Url
-import Maybe exposing (Maybe)
-import Discourse
 import Dict exposing (Dict)
+import Discourse
+import Html exposing (..)
+import Http
+import Json.Decode as D
+import Maybe exposing (Maybe)
+import Url
+import Url.Parser as P exposing ((</>))
 
 
-main : Program flags Model Msg
+main : Program D.Value Model Msg
 main =
     Browser.application
         { init = init
@@ -20,38 +23,97 @@ main =
         , onUrlChange = UrlChanged
         }
 
-type ReaderState =
-    Error String
-    | Reading
-        { activeTopic : Discourse.Id
-        , topics : Dict Discourse.Id Discourse.Topic
-        }
+
+type alias ReaderState =
+    { baseUrl : Url.Url
+    , activeTopic : Int
+    , topics : Dict Int Discourse.Topic
+    }
+
+
+type PageState
+    = Error String
+    | Loading Url.Url (Maybe ReaderState)
+    | Reader ReaderState
+
 
 type alias Model =
     { key : Nav.Key
     , url : Url.Url
-    , state : ReaderState
+    , state : PageState
     }
 
 
-init : flags -> Url.Url -> Nav.Key -> (Model, Cmd Msg)
-init _ url key =
-    ({ key = key
-    , url = url
-    , topic = Nothing
-    }, Cmd.none)
+type Route
+    = ReadTopic Discourse.TopicId (Maybe Int)
+    | NotFound
+
+
+route =
+    let
+        idOrSlug =
+            P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug P.string ]
+
+        optionalId =
+            P.custom "POSTID" (Just << String.toInt)
+    in
+    P.oneOf
+        [ P.map ReadTopic (P.s "t" </> idOrSlug </> optionalId)
+        ]
+
+
+toRoute : Url.Url -> Route
+toRoute url =
+    Maybe.withDefault NotFound (P.parse route url)
+
+
+init : D.Value -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
+init flags url key =
+    let
+        badUrl =
+            "I need an object with the key \"discourseUrl\" containing a valid URL to a discourse instance passed to my init function."
+
+        serverUrl =
+            D.decodeValue (D.field "discourseUrl" D.string) flags
+                |> Result.mapError (\_ -> badUrl)
+                |> Result.map Url.fromString
+                |> Result.andThen (Result.fromMaybe badUrl)
+
+        page =
+            Result.map toRoute serverUrl
+                |> Result.withDefault NotFound
+
+        ( state, cmd ) =
+            case ( serverUrl, page ) of
+                ( Ok discourseUrl, ReadTopic tid pid ) ->
+                    ( Loading discourseUrl Nothing
+                    , Discourse.fetchTopic discourseUrl tid GotTopic
+                    )
+
+                ( Ok _, NotFound ) ->
+                    ( Error "Topic not found.", Cmd.none )
+
+                ( Err msg, _ ) ->
+                    ( Error msg, Cmd.none )
+    in
+    ( { key = key
+      , url = url
+      , state = state
+      }
+    , cmd
+    )
 
 
 type Msg
-    = 
-    UrlRequested Browser.UrlRequest
+    = UrlRequested Browser.UrlRequest
     | UrlChanged Url.Url
+    | GotTopic (Result Http.Error ( Int, Discourse.Topic ))
 
 
-update : Msg -> Model -> (Model, Cmd Msg)
+update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
-    case msg of
-        UrlRequested urlRequest ->
+    case ( model.state, msg ) of
+        ( _, UrlRequested urlRequest ) ->
             case urlRequest of
                 Browser.Internal url ->
                     ( model, Nav.pushUrl model.key (Url.toString url) )
@@ -59,10 +121,38 @@ update msg model =
                 Browser.External href ->
                     ( model, Nav.load href )
 
-        UrlChanged url ->
+        ( _, UrlChanged url ) ->
             ( { model | url = url }
             , Cmd.none
             )
+
+        ( Loading _ _, GotTopic (Err _) ) ->
+            ( { model | state = Error "" }, Cmd.none )
+
+        ( Loading discourseUrl prevState, GotTopic (Ok ( tid, topic )) ) ->
+            ( { model
+                | state =
+                    Reader
+                        { baseUrl = discourseUrl
+                        , activeTopic = tid
+                        , topics = Dict.singleton tid topic
+                        }
+              }
+            , Cmd.none
+            )
+
+        ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
+            ( { model | state = Reader { state | topics = Dict.insert tid topic state.topics } }, Cmd.none )
+
+        ( Reader _, GotTopic (Err e) ) ->
+            let
+                _ =
+                    Debug.log "Invalid topic respose from server" e
+            in
+            ( model, Cmd.none )
+
+        ( Error _, _ ) ->
+            ( model, Cmd.none )
 
 
 subscriptions : Model -> Sub Msg
@@ -76,7 +166,5 @@ view model =
     , body =
         [ div []
             [ text "New Application" ]
-      ]
+        ]
     }
-
-

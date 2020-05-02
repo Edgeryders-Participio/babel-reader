@@ -1,23 +1,37 @@
 module Discourse exposing (..)
 
-import Url exposing (Url)
 import Dict exposing (Dict)
 import Http
-import Result exposing (Result)
 import Json.Decode as D
+import Result exposing (Result)
+import Url exposing (Url)
+import Url.Builder as B
 
-type alias Id = Int
+
+type TopicId
+    = Id Int
+    | Slug String
+
 
 type alias Post =
     { name : Maybe String
     , username : String
     , body : String
+
+    --, parent : Maybe Id
     }
 
+
 type alias Topic =
-    { posts : Dict Id Post
-    , stream : List Id
+    { posts : Dict Int Post
+    , stream : List Int
     }
+
+
+
+--decodePostParent : D.Decoder Maybe Int
+--decodePostParent
+
 
 decodePost : D.Decoder Post
 decodePost =
@@ -26,29 +40,44 @@ decodePost =
         (D.field "username" D.string)
         (D.field "cooked" D.string)
 
+
 decodeTopic : D.Decoder Topic
-decodeTopic = 
+decodeTopic =
     D.map2 Topic
-        (D.at ["post_stream", "posts"]
+        (D.at [ "post_stream", "posts" ]
             (D.map2 Tuple.pair
                 (D.field "id" D.int)
-                decodePost)
+                decodePost
+            )
             |> D.list
             |> D.map Dict.fromList
         )
-        (D.at ["post_stream", "stream"] (D.list D.int))
+        (D.at [ "post_stream", "stream" ] (D.list D.int))
 
 
-type alias TopicResult = Result Http.Error Topic
+type alias TopicResult =
+    Result Http.Error ( Int, Topic )
 
-fetchTopic : Url -> Id -> (TopicResult -> msg) -> Cmd msg 
-fetchTopic server id toMsg =
+
+fetchTopic : Url -> TopicId -> (TopicResult -> msg) -> Cmd msg
+fetchTopic server tid toMsg =
     let
-        url = server
+        idOrSlug =
+            case tid of
+                Slug s ->
+                    s
+
+                Id i ->
+                    String.fromInt i
+
+        url =
+            B.crossOrigin (Url.toString server) [ "t", idOrSlug ] []
     in
-        Http.get
-            { url = Url.toString url
-            , expect = Http.expectJson toMsg decodeTopic
-            }
+    Http.get
+        { url = url
+        , expect = Http.expectJson toMsg (D.map2 Tuple.pair (D.field "id" D.int) decodeTopic)
+        }
+
+
 
 -- fetchPost
