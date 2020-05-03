@@ -49,16 +49,26 @@ type Route
     | NotFound
 
 
+badJson : String
+badJson =
+    """
+I can't understand the topic that was returned from the server. Please contact someone who developed me to fix this!
+"""
+
+
 route =
     let
         idOrSlug =
             P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug P.string ]
+                |> P.map (Debug.log "idOrSlug")
 
         optionalId =
             P.custom "POSTID" (Just << String.toInt)
+                |> P.map (Debug.log "optionalId")
     in
     P.oneOf
-        [ P.map ReadTopic (P.s "t" </> idOrSlug </> optionalId)
+        [ P.map (\tid -> ReadTopic tid Nothing) (P.s "t" </> idOrSlug)
+        , P.map ReadTopic (P.s "t" </> idOrSlug </> optionalId)
         ]
 
 
@@ -80,8 +90,8 @@ init flags url key =
                 |> Result.andThen (Result.fromMaybe badUrl)
 
         page =
-            Result.map toRoute serverUrl
-                |> Result.withDefault NotFound
+            toRoute url
+                |> Debug.log "route"
 
         ( state, cmd ) =
             case ( serverUrl, page ) of
@@ -126,9 +136,6 @@ update msg model =
             , Cmd.none
             )
 
-        ( Loading _ _, GotTopic (Err _) ) ->
-            ( { model | state = Error "" }, Cmd.none )
-
         ( Loading discourseUrl prevState, GotTopic (Ok ( tid, topic )) ) ->
             ( { model
                 | state =
@@ -144,12 +151,17 @@ update msg model =
         ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
             ( { model | state = Reader { state | topics = Dict.insert tid topic state.topics } }, Cmd.none )
 
-        ( Reader _, GotTopic (Err e) ) ->
+        ( _, GotTopic (Err e) ) ->
             let
                 _ =
-                    Debug.log "Invalid topic respose from server" e
+                    case e of
+                        Http.BadBody s ->
+                            Debug.log "Bad json response" s
+
+                        _ ->
+                            ""
             in
-            ( model, Cmd.none )
+            ( { model | state = Error badJson }, Cmd.none )
 
         ( Error _, _ ) ->
             ( model, Cmd.none )
@@ -162,9 +174,29 @@ subscriptions model =
 
 view : Model -> Browser.Document Msg
 view model =
-    { title = "Application Title"
+    let
+        title =
+            Maybe.withDefault "Brreader" <|
+                case model.state of
+                    Reader r ->
+                        Dict.get r.activeTopic r.topics
+                            |> Maybe.map .title
+
+                    _ ->
+                        Nothing
+    in
+    { title = title
     , body =
-        [ div []
-            [ text "New Application" ]
-        ]
+        case model.state of
+            Error s ->
+                [ text s
+                ]
+
+            Loading url _ ->
+                [ text ("Loading " ++ Url.toString url)
+                ]
+
+            Reader r ->
+                [ text (String.fromInt r.activeTopic)
+                ]
     }

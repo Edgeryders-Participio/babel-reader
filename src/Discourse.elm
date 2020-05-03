@@ -23,7 +23,8 @@ type alias Post =
 
 
 type alias Topic =
-    { posts : Dict Int Post
+    { title : String
+    , posts : Dict Int Post
     , stream : List Int
     }
 
@@ -43,13 +44,14 @@ decodePost =
 
 decodeTopic : D.Decoder Topic
 decodeTopic =
-    D.map2 Topic
+    D.map3 Topic
+        (D.field "title" D.string)
         (D.at [ "post_stream", "posts" ]
             (D.map2 Tuple.pair
                 (D.field "id" D.int)
                 decodePost
+                |> D.list
             )
-            |> D.list
             |> D.map Dict.fromList
         )
         (D.at [ "post_stream", "stream" ] (D.list D.int))
@@ -70,8 +72,19 @@ fetchTopic server tid toMsg =
                 Id i ->
                     String.fromInt i
 
+        srvUrlStr =
+            let
+                s =
+                    Url.toString server
+            in
+            if String.endsWith "/" s then
+                String.dropRight 1 s
+
+            else
+                s
+
         url =
-            B.crossOrigin (Url.toString server) [ "t", idOrSlug ] []
+            B.crossOrigin srvUrlStr [ "t", idOrSlug ++ ".json" ] []
     in
     Http.get
         { url = url
