@@ -1,5 +1,6 @@
 module Discourse exposing (..)
 
+import Array exposing (Array)
 import Dict exposing (Dict)
 import Http
 import Json.Decode as D
@@ -25,7 +26,7 @@ type alias Post =
 type alias Topic =
     { title : String
     , posts : Dict Int Post
-    , stream : List Int
+    , stream : Array Int
     }
 
 
@@ -54,11 +55,17 @@ decodeTopic =
             )
             |> D.map Dict.fromList
         )
-        (D.at [ "post_stream", "stream" ] (D.list D.int))
+        (D.at [ "post_stream", "stream" ] (D.array D.int))
 
 
 type alias TopicResult =
     Result Http.Error ( Int, Topic )
+
+
+getPost : Int -> Topic -> Maybe Post
+getPost n topic =
+    Array.get n topic.stream
+        |> Maybe.andThen (\id -> Dict.get id topic.posts)
 
 
 fetchTopic : Url -> TopicId -> (TopicResult -> msg) -> Cmd msg

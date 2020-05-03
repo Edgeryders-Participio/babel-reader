@@ -197,6 +197,11 @@ view model =
                 ]
 
             Reader r ->
-                [ text (String.fromInt r.activeTopic)
+                let
+                    post =
+                        Dict.get r.activeTopic r.topics
+                            |> Maybe.andThen (Discourse.getPost 0)
+                in
+                [ text (Maybe.map .body post |> Maybe.withDefault "Ehmm")
                 ]
     }
