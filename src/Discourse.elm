@@ -53,28 +53,51 @@ topicAndPostIdFromUrl srvUrl url =
         |> Result.toMaybe
 
 
-extractPostParent : Url -> Post -> Maybe ( Int, Int )
-extractPostParent srvUrl p =
-    let
-        firstForkHref : List Html.Parser.Node -> Maybe String
-        firstForkHref ns =
-            case ns of
-                head :: tail ->
-                    case head of
-                        Html.Parser.Element "a" [ ( "href", url ) ] [ Html.Parser.Text "!FORK" ] ->
-                            Just url
+maybeOr : Maybe a -> Maybe a -> Maybe a
+maybeOr a b =
+    case ( a, b ) of
+        ( Just _, _ ) ->
+            a
 
-                        Html.Parser.Element _ _ children ->
-                            firstForkHref children
+        ( Nothing, _ ) ->
+            b
+
+
+extractAndFilterForkLink : Url -> List Html.Parser.Node -> ( Maybe ( Int, Int ), List Html.Parser.Node )
+extractAndFilterForkLink srvUrl nodes =
+    let
+        f ns =
+            case ns of
+                h :: t ->
+                    case h of
+                        Html.Parser.Element "a" [ ( "href", url ) ] [ Html.Parser.Text "!FORK" ] ->
+                            let
+                                ( _, filtered ) =
+                                    f t
+                            in
+                            ( topicAndPostIdFromUrl srvUrl url, filtered )
+
+                        Html.Parser.Element tag attrs children ->
+                            let
+                                ( url0, filteredChildren ) =
+                                    f children
+
+                                ( url1, filteredTail ) =
+                                    f t
+                            in
+                            ( maybeOr url0 url1, Html.Parser.Element tag attrs filteredChildren :: filteredTail )
 
                         _ ->
-                            firstForkHref tail
+                            let
+                                ( url, filtered ) =
+                                    f t
+                            in
+                            ( url, h :: filtered )
 
                 [] ->
-                    Nothing
+                    ( Nothing, [] )
     in
-    firstForkHref p.body
-        |> Maybe.andThen (topicAndPostIdFromUrl srvUrl)
+    f nodes
 
 
 decodePost : Url -> Int -> Maybe ( Int, Int ) -> D.Decoder Post
@@ -108,25 +131,28 @@ decodePost srvUrl topicId forkInfo =
                 _ ->
                     D.fail "Invalid link_counts[] url."
     in
-    D.map8 Post
-        (D.succeed topicId)
-        (D.field "post_number" D.int)
-        (D.field "name" (D.maybe D.string))
-        (D.field "username" D.string)
-        (D.field "cooked" D.string
-            |> D.andThen htmlString
-        )
-        (D.field "post_number" D.int
-            |> D.map setActiveFork
-        )
-        (D.oneOf
-            -- TODO: Use pipeline parser with optional here instead
-            [ D.field "link_counts" <| D.list <| D.field "url" <| D.andThen forkUrl <| D.string
-            , D.succeed []
-            ]
-        )
-        (D.succeed Nothing)
-        |> D.map (\p -> { p | parent = extractPostParent srvUrl p })
+    D.field "cooked" D.string
+        |> D.andThen htmlString
+        |> D.map (extractAndFilterForkLink srvUrl)
+        |> D.andThen
+            (\( parent, html ) ->
+                D.map8 Post
+                    (D.succeed topicId)
+                    (D.field "post_number" D.int)
+                    (D.field "name" (D.maybe D.string))
+                    (D.field "username" D.string)
+                    (D.succeed html)
+                    (D.field "post_number" D.int
+                        |> D.map setActiveFork
+                    )
+                    (D.oneOf
+                        -- TODO: Use pipeline parser with optional here instead
+                        [ D.field "link_counts" <| D.list <| D.field "url" <| D.andThen forkUrl <| D.string
+                        , D.succeed []
+                        ]
+                    )
+                    (D.succeed parent)
+            )
 
 
 decodeTopic : Url -> Maybe ( Int, Int ) -> D.Decoder Topic

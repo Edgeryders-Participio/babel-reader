@@ -60,6 +60,7 @@ I can't understand the topic that was returned from the server. Please contact s
 """
 
 
+route : P.Parser (Route -> a) a
 route =
     let
         idOrSlug =
