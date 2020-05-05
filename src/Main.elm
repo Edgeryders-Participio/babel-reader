@@ -4,10 +4,13 @@ import Browser
 import Browser.Navigation as Nav
 import Dict exposing (Dict)
 import Discourse
-import Html exposing (..)
+import Html as H
+import Html.Attributes as A
+import Html.Parser.Util as HtmlUtil
 import Http
 import Json.Decode as D
 import Maybe exposing (Maybe)
+import Set
 import Url
 import Url.Parser as P exposing ((</>))
 
@@ -26,6 +29,7 @@ main =
 
 type alias ReaderState =
     { baseUrl : Url.Url
+    , forkRoot : Int
     , activeTopic : Int
     , topics : Dict Int Discourse.Topic
     }
@@ -60,11 +64,9 @@ route =
     let
         idOrSlug =
             P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug P.string ]
-                |> P.map (Debug.log "idOrSlug")
 
         optionalId =
             P.custom "POSTID" (Just << String.toInt)
-                |> P.map (Debug.log "optionalId")
     in
     P.oneOf
         [ P.map (\tid -> ReadTopic tid Nothing) (P.s "t" </> idOrSlug)
@@ -91,13 +93,12 @@ init flags url key =
 
         page =
             toRoute url
-                |> Debug.log "route"
 
         ( state, cmd ) =
             case ( serverUrl, page ) of
-                ( Ok discourseUrl, ReadTopic tid pid ) ->
-                    ( Loading discourseUrl Nothing
-                    , Discourse.fetchTopic discourseUrl tid GotTopic
+                ( Ok srvUrl, ReadTopic tid pnr ) ->
+                    ( Loading srvUrl Nothing
+                    , Discourse.fetchTopic srvUrl tid Nothing GotTopic
                     )
 
                 ( Ok _, NotFound ) ->
@@ -136,31 +137,44 @@ update msg model =
             , Cmd.none
             )
 
-        ( Loading discourseUrl prevState, GotTopic (Ok ( tid, topic )) ) ->
-            ( { model
-                | state =
-                    Reader
-                        { baseUrl = discourseUrl
-                        , activeTopic = tid
-                        , topics = Dict.singleton tid topic
-                        }
-              }
-            , Cmd.none
-            )
+        ( Loading srvUrl prevState, GotTopic (Ok ( newTopicId, newTopic )) ) ->
+            let
+                state =
+                    case prevState of
+                        Just s ->
+                            { s | topics = Dict.insert newTopicId newTopic s.topics, forkRoot = newTopicId }
+
+                        Nothing ->
+                            ReaderState srvUrl newTopicId newTopicId (Dict.singleton newTopicId newTopic)
+
+                isCircularDep visited id =
+                    let
+                        isVisited =
+                            Set.member id visited
+                    in
+                    case ( isVisited, Discourse.parentTopicAndPostId id state.topics ) of
+                        ( True, _ ) ->
+                            True
+
+                        ( False, Nothing ) ->
+                            False
+
+                        ( False, Just ( parentTopicId, _ ) ) ->
+                            isCircularDep (Set.insert id visited) parentTopicId
+            in
+            case ( isCircularDep Set.empty newTopicId, Discourse.parentTopicAndPostId newTopicId state.topics ) of
+                ( False, Just ( parentTopicId, parentPostNr ) ) ->
+                    ( { model | state = Loading srvUrl (Just state) }
+                    , Discourse.fetchTopic srvUrl (Discourse.Id parentTopicId) (Just ( parentPostNr, newTopicId )) GotTopic
+                    )
+
+                _ ->
+                    ( { model | state = Reader state }, Cmd.none )
 
         ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
             ( { model | state = Reader { state | topics = Dict.insert tid topic state.topics } }, Cmd.none )
 
-        ( _, GotTopic (Err e) ) ->
-            let
-                _ =
-                    case e of
-                        Http.BadBody s ->
-                            Debug.log "Bad json response" s
-
-                        _ ->
-                            ""
-            in
+        ( _, GotTopic (Err _) ) ->
             ( { model | state = Error badJson }, Cmd.none )
 
         ( Error _, _ ) ->
@@ -189,19 +203,38 @@ view model =
     , body =
         case model.state of
             Error s ->
-                [ text s
+                [ H.text s
                 ]
 
-            Loading url _ ->
-                [ text ("Loading " ++ Url.toString url)
+            Loading _ _ ->
+                [ H.text "Loading"
                 ]
 
             Reader r ->
                 let
-                    post =
-                        Dict.get r.activeTopic r.topics
-                            |> Maybe.andThen (Discourse.getPost 0)
+                    post1 =
+                        Dict.get r.forkRoot r.topics
+                            |> Maybe.andThen (Discourse.getPost 1)
+
+                    thread visited p =
+                        case ( Set.member ( p.topicId, p.seq ) visited, Discourse.nextPost p r.topics ) of
+                            ( False, Just n ) ->
+                                p :: thread (Set.insert ( p.topicId, p.seq ) visited) n
+
+                            _ ->
+                                []
+
+                    domId p =
+                        "post-" ++ String.fromInt p.topicId ++ "-" ++ String.fromInt p.seq
+
+                    viewPost p =
+                        H.div [ A.id (domId p) ] (HtmlUtil.toVirtualDom p.body)
                 in
-                [ text (Maybe.map .body post |> Maybe.withDefault "Ehmm")
-                ]
+                case post1 of
+                    Just p1 ->
+                        thread Set.empty p1
+                            |> List.map viewPost
+
+                    Nothing ->
+                        []
     }
