@@ -1,17 +1,20 @@
 module Main exposing (Model, Msg, init, subscriptions, update, view)
 
 import Browser
+import Browser.Dom as Dom
 import Browser.Navigation as Nav
 import Dict exposing (Dict)
 import Discourse
 import Html as H
 import Html.Attributes as A
+import Html.Events as E
 import Html.Parser.Util as HtmlUtil
 import Http
 import Json.Decode as D
 import Maybe exposing (Maybe)
 import Parser as P exposing ((|.), (|=))
 import Set
+import Task
 import Url
 
 
@@ -37,7 +40,7 @@ type alias ReaderState =
 
 type PageState
     = Error String
-    | Loading Url.Url (Maybe ReaderState)
+    | Loading Url.Url (Maybe ReaderState) (Maybe ( Int, Int ))
     | Reader ReaderState
 
 
@@ -49,7 +52,7 @@ type alias Model =
 
 
 type Route
-    = ReadTopic Discourse.TopicId (Maybe Int)
+    = ReadTopic Discourse.TopicId (Maybe ( Int, Int ))
     | NotFound
 
 
@@ -71,11 +74,14 @@ toRoute url =
         idOrSlug =
             P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug segmentStr ]
 
-        idOrNothing =
+        idsOrNothing =
             P.oneOf
-                [ P.succeed Just
+                [ P.succeed Tuple.pair
                     |. P.symbol "/"
                     |= P.int
+                    |. P.symbol "/"
+                    |= P.int
+                    |> P.map Just
                 , P.succeed Nothing
                 ]
 
@@ -84,7 +90,7 @@ toRoute url =
                 |. P.chompIf (\c -> c == '/')
                 |. P.symbol "t/"
                 |= idOrSlug
-                |= idOrNothing
+                |= idsOrNothing
                 |. P.end
     in
     case P.run route url.path of
@@ -96,6 +102,19 @@ toRoute url =
                 |> Maybe.map (P.run route)
                 |> Maybe.andThen Result.toMaybe
                 |> Maybe.withDefault NotFound
+
+
+discourseUrl : PageState -> Maybe Url.Url
+discourseUrl s =
+    case s of
+        Loading url _ _ ->
+            Just url
+
+        Reader r ->
+            Just r.baseUrl
+
+        _ ->
+            Nothing
 
 
 init : D.Value -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
@@ -115,8 +134,8 @@ init flags url key =
 
         ( state, cmd ) =
             case ( serverUrl, page ) of
-                ( Ok srvUrl, ReadTopic tid pnr ) ->
-                    ( Loading srvUrl Nothing
+                ( Ok srvUrl, ReadTopic tid showPost ) ->
+                    ( Loading srvUrl Nothing showPost
                     , Discourse.fetchTopic srvUrl tid Nothing GotTopic
                     )
 
@@ -138,25 +157,68 @@ type Msg
     = UrlRequested Browser.UrlRequest
     | UrlChanged Url.Url
     | GotTopic (Result Http.Error ( Int, Discourse.Topic ))
+    | SetActiveFork ( Int, Int ) (Maybe ( Int, Int ))
+    | NoOp
+
+
+scrollToPost : Int -> Int -> Cmd Msg
+scrollToPost topicId postNr =
+    Dom.getElement (domId topicId postNr)
+        |> Task.andThen (\e -> Dom.setViewport e.element.x e.element.y)
+        |> Task.attempt (\_ -> NoOp)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case ( model.state, msg ) of
+        ( _, NoOp ) ->
+            ( model, Cmd.none )
+
+        ( Loading _ _ _, SetActiveFork _ _ ) ->
+            ( model, Cmd.none )
+
         ( _, UrlRequested urlRequest ) ->
             case urlRequest of
                 Browser.Internal url ->
-                    ( model, Nav.pushUrl model.key (Url.toString url) )
+                    case toRoute url of
+                        NotFound ->
+                            ( model, Cmd.none )
 
+                        ReadTopic slugOrId scrollTo ->
+                            ( model
+                            , scrollTo
+                                |> Maybe.map
+                                    (\( topicId, postNr ) ->
+                                        [ scrollToPost topicId postNr
+                                        , Nav.pushUrl model.key (Url.toString url)
+                                        ]
+                                    )
+                                |> Maybe.withDefault []
+                                |> Cmd.batch
+                            )
+
+                --( model, Nav.pushUrl model.key (Url.toString url) )
                 Browser.External href ->
-                    ( model, Nav.load href )
+                    case model.state of
+                        Reader state ->
+                            case Discourse.topicAndPostIdFromUrl state.baseUrl href of
+                                (Just ( topicId, _ )) as fork ->
+                                    ( { model | state = Loading state.baseUrl (Just state) fork }
+                                    , Discourse.fetchTopic state.baseUrl (Discourse.Id topicId) Nothing GotTopic
+                                    )
+
+                                Nothing ->
+                                    ( model, Nav.load href )
+
+                        _ ->
+                            ( model, Nav.load href )
 
         ( _, UrlChanged url ) ->
             ( { model | url = url }
             , Cmd.none
             )
 
-        ( Loading srvUrl prevState, GotTopic (Ok ( newTopicId, newTopic )) ) ->
+        ( Loading srvUrl prevState scrollTo, GotTopic (Ok ( newTopicId, newTopic )) ) ->
             let
                 state =
                     case prevState of
@@ -183,15 +245,47 @@ update msg model =
             in
             case ( isCircularDep Set.empty newTopicId, Discourse.parentTopicAndPostId newTopicId state.topics ) of
                 ( False, Just ( parentTopicId, parentPostNr ) ) ->
-                    ( { model | state = Loading srvUrl (Just state) }
+                    ( { model | state = Loading srvUrl (Just state) scrollTo }
                     , Discourse.fetchTopic srvUrl (Discourse.Id parentTopicId) (Just ( parentPostNr, newTopicId )) GotTopic
                     )
 
                 _ ->
-                    ( { model | state = Reader state }, Cmd.none )
+                    ( { model | state = Reader state }
+                    , case scrollTo of
+                        Just ( topicId, postNr ) ->
+                            scrollToPost topicId postNr
+
+                        _ ->
+                            Cmd.none
+                    )
 
         ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
             ( { model | state = Reader { state | topics = Dict.insert tid topic state.topics } }, Cmd.none )
+
+        ( Reader state, SetActiveFork ( onTopicId, onPostNr ) selectedFork ) ->
+            let
+                newState =
+                    { state
+                        | topics =
+                            state.topics
+                                |> Dict.update onTopicId
+                                    (Maybe.map
+                                        (\topic ->
+                                            { topic
+                                                | posts =
+                                                    topic.posts
+                                                        |> Dict.update onPostNr
+                                                            (Maybe.map
+                                                                (\post ->
+                                                                    { post | activeFork = selectedFork }
+                                                                )
+                                                            )
+                                            }
+                                        )
+                                    )
+                    }
+            in
+            ( { model | state = Reader newState }, Cmd.none )
 
         ( _, GotTopic (Err _) ) ->
             ( { model | state = Error badJson }, Cmd.none )
@@ -203,6 +297,11 @@ update msg model =
 subscriptions : Model -> Sub Msg
 subscriptions model =
     Sub.none
+
+
+domId : Int -> Int -> String
+domId topicId postNr =
+    "post-" ++ String.fromInt topicId ++ "-" ++ String.fromInt postNr
 
 
 view : Model -> Browser.Document Msg
@@ -225,7 +324,7 @@ view model =
                 [ H.text s
                 ]
 
-            Loading _ _ ->
+            Loading _ _ _ ->
                 [ H.text "Loading"
                 ]
 
@@ -243,16 +342,28 @@ view model =
                             _ ->
                                 []
 
-                    domId p =
-                        "post-" ++ String.fromInt p.topicId ++ "-" ++ String.fromInt p.seq
+                    postForkSelector p =
+                        if not (List.isEmpty p.forks) then
+                            p.forks
+                                |> List.indexedMap
+                                    (\i fork ->
+                                        H.a [ E.onClick (SetActiveFork ( p.topicId, p.seq ) (Just fork)) ] [ H.text ("fork" ++ String.fromInt (i + 1)) ]
+                                    )
+                                |> List.append [ H.a [ E.onClick (SetActiveFork ( p.topicId, p.seq ) Nothing) ] [ H.text "original" ] ]
+                                |> H.div []
+
+                        else
+                            H.div [] []
 
                     viewPost p =
-                        H.div [ A.id (domId p) ] (HtmlUtil.toVirtualDom p.body)
+                        [ postForkSelector p
+                        , H.div [ A.id (domId p.topicId p.seq) ] (HtmlUtil.toVirtualDom p.body)
+                        ]
                 in
                 case post1 of
                     Just p1 ->
                         thread Set.empty p1
-                            |> List.map viewPost
+                            |> List.concatMap viewPost
 
                     Nothing ->
                         []

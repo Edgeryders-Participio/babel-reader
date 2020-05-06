@@ -1,4 +1,4 @@
-module Discourse exposing (Post, Topic, TopicId(..), TopicResult, fetchTopic, getPost, nextPost, parentTopicAndPostId)
+module Discourse exposing (Post, Topic, TopicId(..), TopicResult, fetchTopic, getPost, nextPost, parentTopicAndPostId, topicAndPostIdFromUrl)
 
 import Dict exposing (Dict)
 import Html.Parser

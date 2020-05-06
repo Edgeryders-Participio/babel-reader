@@ -9,12 +9,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jims/breader.git"
+    "url": "git+https://github.com/Edgeryders-Participio/babel-reader.git"
   },
   "author": "Jim Sagevid",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/jims/breader/issues"
+    "url": "https://github.com/Edgeryders-Participio/babel-reader/issues"
   },
-  "homepage": "https://github.com/jims/breader#readme"
+  "homepage": "https://github.com/Edgeryders-Participio/babel-reader#readme"
 }
