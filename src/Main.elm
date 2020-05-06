@@ -10,9 +10,9 @@ import Html.Parser.Util as HtmlUtil
 import Http
 import Json.Decode as D
 import Maybe exposing (Maybe)
+import Parser as P exposing ((|.), (|=))
 import Set
 import Url
-import Url.Parser as P exposing ((</>))
 
 
 main : Program D.Value Model Msg
@@ -60,24 +60,42 @@ I can't understand the topic that was returned from the server. Please contact s
 """
 
 
-route : P.Parser (Route -> a) a
-route =
-    let
-        idOrSlug =
-            P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug P.string ]
-
-        optionalId =
-            P.custom "POSTID" (Just << String.toInt)
-    in
-    P.oneOf
-        [ P.map (\tid -> ReadTopic tid Nothing) (P.s "t" </> idOrSlug)
-        , P.map ReadTopic (P.s "t" </> idOrSlug </> optionalId)
-        ]
-
-
 toRoute : Url.Url -> Route
 toRoute url =
-    Maybe.withDefault NotFound (P.parse route url)
+    let
+        segmentStr =
+            P.getChompedString <|
+                P.succeed ()
+                    |. P.chompUntilEndOr "/"
+
+        idOrSlug =
+            P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug segmentStr ]
+
+        idOrNothing =
+            P.oneOf
+                [ P.succeed Just
+                    |. P.symbol "/"
+                    |= P.int
+                , P.succeed Nothing
+                ]
+
+        route =
+            P.succeed ReadTopic
+                |. P.chompIf (\c -> c == '/')
+                |. P.symbol "t/"
+                |= idOrSlug
+                |= idOrNothing
+                |. P.end
+    in
+    case P.run route url.path of
+        Ok r ->
+            r
+
+        _ ->
+            url.fragment
+                |> Maybe.map (P.run route)
+                |> Maybe.andThen Result.toMaybe
+                |> Maybe.withDefault NotFound
 
 
 init : D.Value -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
