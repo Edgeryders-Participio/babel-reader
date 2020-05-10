@@ -16,6 +16,7 @@ import Parser as P exposing ((|.), (|=))
 import Set
 import Task
 import Url
+import Url.Builder as B
 
 
 main : Program D.Value Model Msg
@@ -25,7 +26,7 @@ main =
         , view = view
         , update = update
         , subscriptions = subscriptions
-        , onUrlRequest = UrlRequested
+        , onUrlRequest = LinkClicked
         , onUrlChange = UrlChanged
         }
 
@@ -104,19 +105,6 @@ toRoute url =
                 |> Maybe.withDefault NotFound
 
 
-discourseUrl : PageState -> Maybe Url.Url
-discourseUrl s =
-    case s of
-        Loading url _ _ ->
-            Just url
-
-        Reader r ->
-            Just r.baseUrl
-
-        _ ->
-            Nothing
-
-
 init : D.Value -> Url.Url -> Nav.Key -> ( Model, Cmd Msg )
 init flags url key =
     let
@@ -154,7 +142,7 @@ init flags url key =
 
 
 type Msg
-    = UrlRequested Browser.UrlRequest
+    = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotTopic (Result Http.Error ( Int, Discourse.Topic ))
     | SetActiveFork ( Int, Int ) (Maybe ( Int, Int ))
@@ -177,7 +165,7 @@ update msg model =
         ( Loading _ _ _, SetActiveFork _ _ ) ->
             ( model, Cmd.none )
 
-        ( _, UrlRequested urlRequest ) ->
+        ( _, LinkClicked urlRequest ) ->
             case urlRequest of
                 Browser.Internal url ->
                     case toRoute url of
@@ -285,7 +273,9 @@ update msg model =
                                     )
                     }
             in
-            ( { model | state = Reader newState }, Cmd.none )
+            ( { model | state = Reader newState }
+            , scrollToPost onTopicId onPostNr
+            )
 
         ( _, GotTopic (Err _) ) ->
             ( { model | state = Error badJson }, Cmd.none )
@@ -308,7 +298,7 @@ view : Model -> Browser.Document Msg
 view model =
     let
         title =
-            Maybe.withDefault "Brreader" <|
+            Maybe.withDefault "Babel Between Us Reader" <|
                 case model.state of
                     Reader r ->
                         Dict.get r.activeTopic r.topics
@@ -342,22 +332,44 @@ view model =
                             _ ->
                                 []
 
+                    forkHref : ( Int, Int ) -> String
+                    forkHref ( fromTopicId, fromPostNr ) =
+                        Dict.get fromTopicId r.topics
+                            |> Maybe.map .slug
+                            |> Maybe.map (\slug -> B.relative [ "#", "t", slug, String.fromInt fromTopicId, String.fromInt fromPostNr ] [])
+                            |> Maybe.withDefault ""
+
+                    forkLink : Discourse.Post -> ( Int, Int ) -> String -> H.Html Msg
+                    forkLink p fork text =
+                        let
+                            activeFork =
+                                if fork == ( p.topicId, p.seq ) then
+                                    Nothing
+
+                                else
+                                    Just fork
+                        in
+                        H.a
+                            [ A.target "_self"
+                            , A.href (forkHref fork)
+                            , E.onClick (SetActiveFork ( p.topicId, p.seq ) activeFork)
+                            ]
+                            [ H.text text
+                            ]
+
                     postForkSelector p =
                         if not (List.isEmpty p.forks) then
                             p.forks
-                                |> List.indexedMap
-                                    (\i fork ->
-                                        H.a [ E.onClick (SetActiveFork ( p.topicId, p.seq ) (Just fork)) ] [ H.text ("fork" ++ String.fromInt (i + 1)) ]
-                                    )
-                                |> List.append [ H.a [ E.onClick (SetActiveFork ( p.topicId, p.seq ) Nothing) ] [ H.text "original" ] ]
+                                |> List.indexedMap (\i fork -> forkLink p fork ("fork" ++ String.fromInt (i + 1)))
+                                |> List.append [ forkLink p ( p.topicId, p.seq ) "original" ]
                                 |> H.div []
 
                         else
                             H.div [] []
 
                     viewPost p =
-                        [ postForkSelector p
-                        , H.div [ A.id (domId p.topicId p.seq) ] (HtmlUtil.toVirtualDom p.body)
+                        [ H.div [ A.id (domId p.topicId p.seq) ] (HtmlUtil.toVirtualDom p.body)
+                        , postForkSelector p
                         ]
                 in
                 case post1 of

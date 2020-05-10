@@ -29,6 +29,7 @@ type alias Post =
 
 type alias Topic =
     { title : String
+    , slug : String
     , posts : Dict Int Post -- key is post sequence number
     }
 
@@ -157,8 +158,9 @@ decodePost srvUrl topicId forkInfo =
 
 decodeTopic : Url -> Maybe ( Int, Int ) -> D.Decoder Topic
 decodeTopic srvUrl forkInfo =
-    D.map2 Topic
+    D.map3 Topic
         (D.field "title" D.string)
+        (D.field "slug" D.string)
         (D.field "id" D.int
             |> D.andThen
                 (\tid ->
