@@ -1,4 +1,4 @@
-module Main exposing (Model, Msg, init, subscriptions, update, view)
+port module Main exposing (Model, Msg, init, subscriptions, update, view)
 
 import Browser
 import Browser.Dom as Dom
@@ -13,10 +13,22 @@ import Http
 import Json.Decode as D
 import Maybe exposing (Maybe)
 import Parser as P exposing ((|.), (|=))
-import Set
+import Set exposing (Set)
 import Task
 import Url
 import Url.Builder as B
+
+
+port setBodyClass : String -> Cmd msg
+
+
+applyBodyClass : ReaderState -> Cmd msg
+applyBodyClass state =
+    if state.isLight then
+        setBodyClass "yin"
+
+    else
+        setBodyClass "yang"
 
 
 main : Program D.Value Model Msg
@@ -36,6 +48,8 @@ type alias ReaderState =
     , forkRoot : Int
     , activeTopic : Int
     , topics : Dict Int Discourse.Topic
+    , showAuthor : Set ( Int, Int )
+    , isLight : Bool
     }
 
 
@@ -165,7 +179,9 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotTopic (Result Http.Error ( Int, Discourse.Topic ))
-    | SetActiveFork ( Int, Int ) (Maybe Int)
+    | SetActiveFork Int Int (Maybe Int)
+    | SetShowAuthor Int Int Bool
+    | ToggleYinYang
     | NoOp
 
 
@@ -190,12 +206,6 @@ update msg model =
         --switchToTopic topicId =
     in
     case ( model.state, msg ) of
-        ( _, NoOp ) ->
-            ( model, Cmd.none )
-
-        ( LoadingThread _ _ _, SetActiveFork _ _ ) ->
-            ( model, Cmd.none )
-
         ( _, LinkClicked urlRequest ) ->
             case urlRequest of
                 Browser.Internal url ->
@@ -244,7 +254,7 @@ update msg model =
                             { s | topics = Dict.insert newTopicId newTopic s.topics, forkRoot = newTopicId }
 
                         Nothing ->
-                            ReaderState srvUrl newTopicId newTopicId (Dict.singleton newTopicId newTopic)
+                            ReaderState srvUrl newTopicId newTopicId (Dict.singleton newTopicId newTopic) Set.empty False
 
                 isCircularDep visited id =
                     let
@@ -277,7 +287,6 @@ update msg model =
                             Cmd.none
                     )
 
-        -- TODO: Verify affected forks
         ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
             let
                 topics =
@@ -288,36 +297,54 @@ update msg model =
                     Discourse.getPost 1 topic
                         |> Maybe.andThen .parent
                         |> Maybe.andThen (\( topicId, postNr ) -> Dict.get topicId state.topics |> Maybe.andThen (Discourse.getPost postNr))
+
+                newTopics =
+                    affectedPost
+                        |> Maybe.map (\p -> Discourse.updatePost p.topicId p.seq (Discourse.verifyForks topics) topics)
+                        |> Maybe.withDefault topics
             in
             ( { model
                 | state =
                     Reader
                         { state
-                            | topics =
-                                affectedPost
-                                    |> Maybe.map (\p -> Discourse.updatePost p.topicId p.seq (Discourse.verifyForks topics) topics)
-                                    |> Maybe.withDefault topics
+                            | topics = newTopics
                         }
               }
             , Cmd.none
             )
 
-        ( Reader state, SetActiveFork ( onTopicId, onPostNr ) selectedFork ) ->
+        ( Reader state, SetActiveFork onTopicId onPostNr selectedForkTopicId ) ->
             ( { model
                 | state =
                     Reader
                         { state
-                            | topics = Discourse.updatePost onTopicId onPostNr (Discourse.setActiveFork selectedFork) state.topics
+                            | topics = Discourse.updatePost onTopicId onPostNr (Discourse.setActiveFork selectedForkTopicId) state.topics
                         }
               }
             , Cmd.none
               --scrollToPost onTopicId onPostNr
             )
 
+        ( Reader state, SetShowAuthor onTopicId onPostNr show ) ->
+            let
+                newShowAuthors =
+                    if show then
+                        Set.insert ( onTopicId, onPostNr ) state.showAuthor
+
+                    else
+                        Set.remove ( onTopicId, onPostNr ) state.showAuthor
+            in
+            ( { model | state = Reader { state | showAuthor = newShowAuthors } }, Cmd.none )
+
+        ( Reader state, ToggleYinYang ) ->
+            ( { model | state = Reader { state | isLight = not state.isLight } }
+            , applyBodyClass state
+            )
+
         ( _, GotTopic (Err _) ) ->
             ( { model | state = Error badJson }, Cmd.none )
 
-        ( Error _, _ ) ->
+        _ ->
             ( model, Cmd.none )
 
 
@@ -348,11 +375,13 @@ view model =
     , body =
         case model.state of
             Error s ->
-                [ H.text s
+                [ H.section [] [ H.text s ]
+                , H.footer [] []
                 ]
 
             LoadingThread _ _ _ ->
-                [ H.text "Loading"
+                [ H.section [] [ H.div [ A.class "lds-dual-ring" ] [] ]
+                , H.footer [] []
                 ]
 
             Reader r ->
@@ -392,7 +421,7 @@ view model =
                         H.a
                             [ A.target "_self"
                             , A.href (forkHref fork)
-                            , onClickLink (SetActiveFork ( p.topicId, p.seq ) activeFork)
+                            , onClickLink (SetActiveFork p.topicId p.seq activeFork)
                             ]
                             [ H.text text
                             ]
@@ -408,8 +437,15 @@ view model =
                         else
                             H.div [] []
 
+                    viewAuthor p =
+                        H.div
+                            [ A.class "author" ]
+                            [ H.text (Maybe.withDefault p.username p.name) ]
+
                     viewPost p =
-                        [ H.article [ A.id (domId p.topicId p.seq) ] (HtmlUtil.toVirtualDom p.body)
+                        [ H.article
+                            [ A.id (domId p.topicId p.seq) ]
+                            (viewAuthor p :: HtmlUtil.toVirtualDom p.body)
                         , postForkSelector p
                         ]
                 in

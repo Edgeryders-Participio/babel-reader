@@ -9,10 +9,14 @@
 	<script src="breader.min.js"></script>
 </head>
 
-<body>
+<body class="yin">
 	<script>
 		var app = Elm.Main.init({
 			flags: { discourseUrl: "https://forum.blivande.com" }
+		});
+
+		app.ports.setBodyClass.subscribe(function (cls) {
+			document.body.className = cls;
 		});
 	</script>
 </body>
