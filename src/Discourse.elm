@@ -1,4 +1,4 @@
-module Discourse exposing (Post, Topic, TopicId(..), TopicResult, fetchTopic, getPost, nextPost, parentTopicAndPostId, topicAndPostIdFromUrl)
+module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, forkTopicId, getPost, isPotentialFork, isVerifiedFork, nextPost, parentTopicAndPostId, potentialForks, setActiveFork, topicAndPostIdFromUrl, updatePost, verifyForks)
 
 import Dict exposing (Dict)
 import Html.Parser
@@ -15,16 +15,83 @@ type TopicId
     | Slug String
 
 
+type Fork
+    = Potential Int -- topic ids
+    | Verified Int
+
+
 type alias Post =
     { topicId : Int
     , seq : Int
     , name : Maybe String
     , username : String
     , body : List Html.Parser.Node
-    , activeFork : Maybe ( Int, Int )
-    , forks : List ( Int, Int )
+    , activeFork : Maybe Int
+    , forks : List Fork
     , parent : Maybe ( Int, Int )
     }
+
+
+isVerifiedFork : Fork -> Bool
+isVerifiedFork f =
+    case f of
+        Verified _ ->
+            True
+
+        _ ->
+            False
+
+
+isPotentialFork : Fork -> Bool
+isPotentialFork f =
+    not (isVerifiedFork f)
+
+
+forkTopicId : Fork -> Int
+forkTopicId f =
+    case f of
+        Potential p ->
+            p
+
+        Verified v ->
+            v
+
+
+potentialForks : Post -> List Int
+potentialForks p =
+    p.forks
+        |> List.filter isPotentialFork
+        |> List.map forkTopicId
+
+
+setActiveFork : Maybe Int -> Post -> Post
+setActiveFork fork post =
+    { post | activeFork = fork }
+
+
+verifyForks : Dict Int Topic -> Post -> Post
+verifyForks ts p =
+    let
+        verifyFork f =
+            case f of
+                Potential fid ->
+                    Dict.get fid ts
+                        |> Maybe.andThen (getPost 1)
+                        |> Maybe.andThen .parent
+                        |> Maybe.map
+                            (\parent ->
+                                if ( p.topicId, p.seq ) == parent then
+                                    Verified fid
+
+                                else
+                                    Potential fid
+                            )
+                        |> Maybe.withDefault f
+
+                _ ->
+                    f
+    in
+    { p | forks = List.map verifyFork p.forks }
 
 
 type alias Topic =
@@ -40,15 +107,20 @@ topicAndPostIdFromUrl srvUrl url =
         urlStr =
             Url.toString srvUrl
 
+        postNrOrDefault def =
+            P.oneOf
+                [ P.succeed identity |. P.token "/" |= P.int
+                , P.succeed def
+                ]
+
         topicAndPost =
             P.succeed Tuple.pair
-                |. P.symbol urlStr
-                |. P.symbol "t/"
+                |. P.token urlStr
+                |. P.token "t/"
                 |. P.chompUntil "/"
-                |. P.symbol "/"
+                |. P.token "/"
                 |= P.int
-                |. P.symbol "/"
-                |= P.int
+                |= postNrOrDefault 1
     in
     P.run topicAndPost url
         |> Result.toMaybe
@@ -101,8 +173,8 @@ extractAndFilterForkLink srvUrl nodes =
     f nodes
 
 
-decodePost : Url -> Int -> Maybe ( Int, Int ) -> D.Decoder Post
-decodePost srvUrl topicId forkInfo =
+decodePost : Url -> Maybe ( Int, Int ) -> D.Decoder Post
+decodePost srvUrl forkInfo =
     let
         htmlString html =
             case Html.Parser.run html of
@@ -112,11 +184,11 @@ decodePost srvUrl topicId forkInfo =
                 Err e ->
                     D.fail (P.deadEndsToString e)
 
-        setActiveFork postNr =
+        setActiveForkFromLoadTrail postNr =
             case forkInfo of
                 Just ( postIdToFork, forksToTopicId ) ->
                     if postNr == postIdToFork then
-                        Just ( forksToTopicId, 1 )
+                        Just forksToTopicId
 
                     else
                         Nothing
@@ -138,17 +210,21 @@ decodePost srvUrl topicId forkInfo =
         |> D.andThen
             (\( parent, html ) ->
                 D.map8 Post
-                    (D.succeed topicId)
+                    (D.field "topic_id" D.int)
                     (D.field "post_number" D.int)
                     (D.field "name" (D.maybe D.string))
                     (D.field "username" D.string)
                     (D.succeed html)
                     (D.field "post_number" D.int
-                        |> D.map setActiveFork
+                        |> D.map setActiveForkFromLoadTrail
                     )
                     (D.oneOf
                         -- TODO: Use pipeline parser with optional here instead
-                        [ D.field "link_counts" <| D.list <| D.field "url" <| D.andThen forkUrl <| D.string
+                        [ (D.field "link_counts" <| D.list <| D.field "url" <| D.andThen forkUrl <| D.string)
+                            |> D.map
+                                (List.filter (\( _, pnr ) -> pnr == 1)
+                                    >> List.map (Tuple.first >> Potential)
+                                )
                         , D.succeed []
                         ]
                     )
@@ -161,17 +237,13 @@ decodeTopic srvUrl forkInfo =
     D.map3 Topic
         (D.field "title" D.string)
         (D.field "slug" D.string)
-        (D.field "id" D.int
-            |> D.andThen
-                (\tid ->
-                    D.at [ "post_stream", "posts" ]
-                        (D.map2 Tuple.pair
-                            (D.field "post_number" D.int)
-                            (decodePost srvUrl tid forkInfo)
-                            |> D.list
-                        )
-                        |> D.map Dict.fromList
-                )
+        (D.at [ "post_stream", "posts" ]
+            (D.map2 Tuple.pair
+                (D.field "post_number" D.int)
+                (decodePost srvUrl forkInfo)
+                |> D.list
+            )
+            |> D.map Dict.fromList
         )
 
 
@@ -182,9 +254,9 @@ type alias TopicResult =
 nextPost : Post -> Dict Int Topic -> Maybe Post
 nextPost p topics =
     case p.activeFork of
-        Just ( tid, pnr ) ->
+        Just tid ->
             Dict.get tid topics
-                |> Maybe.andThen (getPost pnr)
+                |> Maybe.andThen (getPost 1)
 
         _ ->
             Dict.get p.topicId topics
@@ -194,6 +266,11 @@ nextPost p topics =
 getPost : Int -> Topic -> Maybe Post
 getPost n topic =
     Dict.get n topic.posts
+
+
+updatePost : Int -> Int -> (Post -> Post) -> Dict Int Topic -> Dict Int Topic
+updatePost topicId postNr f topics =
+    Dict.update topicId (Maybe.map (\t -> { t | posts = Dict.update postNr (Maybe.map f) t.posts })) topics
 
 
 parentTopicAndPostId : Int -> Dict Int Topic -> Maybe ( Int, Int )

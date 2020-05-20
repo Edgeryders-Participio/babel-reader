@@ -41,7 +41,7 @@ type alias ReaderState =
 
 type PageState
     = Error String
-    | Loading Url.Url (Maybe ReaderState) (Maybe ( Int, Int ))
+    | LoadingThread Url.Url (Maybe ReaderState) (Maybe ( Int, Int ))
     | Reader ReaderState
 
 
@@ -67,31 +67,51 @@ I can't understand the topic that was returned from the server. Please contact s
 toRoute : Url.Url -> Route
 toRoute url =
     let
+        tokenOpt t =
+            P.oneOf [ P.token t, P.succeed () ]
+
+        id =
+            P.chompWhile Char.isDigit
+                |> P.getChompedString
+                |> P.andThen
+                    (\s ->
+                        case String.toInt s of
+                            Just i ->
+                                P.succeed i
+
+                            _ ->
+                                P.problem ("\"" ++ s ++ "\" is not a valid id.")
+                    )
+
         segmentStr =
             P.getChompedString <|
                 P.succeed ()
                     |. P.chompUntilEndOr "/"
 
         idOrSlug =
-            P.oneOf [ P.map Discourse.Id P.int, P.map Discourse.Slug segmentStr ]
+            P.oneOf
+                [ P.map Discourse.Id id
+                , P.map Discourse.Slug segmentStr
+                ]
 
         idsOrNothing =
             P.oneOf
                 [ P.succeed Tuple.pair
-                    |. P.symbol "/"
-                    |= P.int
-                    |. P.symbol "/"
-                    |= P.int
+                    |. P.backtrackable (P.token "/")
+                    |= id
+                    |. P.token "/"
+                    |= id
                     |> P.map Just
                 , P.succeed Nothing
                 ]
 
         route =
             P.succeed ReadTopic
-                |. P.chompIf (\c -> c == '/')
-                |. P.symbol "t/"
+                |. tokenOpt "/"
+                |. P.token "t/"
                 |= idOrSlug
                 |= idsOrNothing
+                |. tokenOpt "/"
                 |. P.end
     in
     case P.run route url.path of
@@ -123,7 +143,7 @@ init flags url key =
         ( state, cmd ) =
             case ( serverUrl, page ) of
                 ( Ok srvUrl, ReadTopic tid showPost ) ->
-                    ( Loading srvUrl Nothing showPost
+                    ( LoadingThread srvUrl Nothing showPost
                     , Discourse.fetchTopic srvUrl tid Nothing GotTopic
                     )
 
@@ -145,7 +165,7 @@ type Msg
     = LinkClicked Browser.UrlRequest
     | UrlChanged Url.Url
     | GotTopic (Result Http.Error ( Int, Discourse.Topic ))
-    | SetActiveFork ( Int, Int ) (Maybe ( Int, Int ))
+    | SetActiveFork ( Int, Int ) (Maybe Int)
     | NoOp
 
 
@@ -156,13 +176,24 @@ scrollToPost topicId postNr =
         |> Task.attempt (\_ -> NoOp)
 
 
+switchToTopic : Int -> Maybe ( Int, Int ) -> PageState -> ( PageState, Cmd Msg )
+switchToTopic topicId scrollTo state =
+    ( state, Cmd.none )
+
+
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
+    let
+        _ =
+            1
+
+        --switchToTopic topicId =
+    in
     case ( model.state, msg ) of
         ( _, NoOp ) ->
             ( model, Cmd.none )
 
-        ( Loading _ _ _, SetActiveFork _ _ ) ->
+        ( LoadingThread _ _ _, SetActiveFork _ _ ) ->
             ( model, Cmd.none )
 
         ( _, LinkClicked urlRequest ) ->
@@ -170,7 +201,7 @@ update msg model =
                 Browser.Internal url ->
                     case toRoute url of
                         NotFound ->
-                            ( model, Cmd.none )
+                            ( model, Nav.load (Url.toString url) )
 
                         ReadTopic slugOrId scrollTo ->
                             ( model
@@ -185,13 +216,12 @@ update msg model =
                                 |> Cmd.batch
                             )
 
-                --( model, Nav.pushUrl model.key (Url.toString url) )
                 Browser.External href ->
                     case model.state of
                         Reader state ->
                             case Discourse.topicAndPostIdFromUrl state.baseUrl href of
                                 (Just ( topicId, _ )) as fork ->
-                                    ( { model | state = Loading state.baseUrl (Just state) fork }
+                                    ( { model | state = LoadingThread state.baseUrl (Just state) fork }
                                     , Discourse.fetchTopic state.baseUrl (Discourse.Id topicId) Nothing GotTopic
                                     )
 
@@ -206,7 +236,7 @@ update msg model =
             , Cmd.none
             )
 
-        ( Loading srvUrl prevState scrollTo, GotTopic (Ok ( newTopicId, newTopic )) ) ->
+        ( LoadingThread srvUrl prevState scrollTo, GotTopic (Ok ( newTopicId, newTopic )) ) ->
             let
                 state =
                     case prevState of
@@ -233,7 +263,7 @@ update msg model =
             in
             case ( isCircularDep Set.empty newTopicId, Discourse.parentTopicAndPostId newTopicId state.topics ) of
                 ( False, Just ( parentTopicId, parentPostNr ) ) ->
-                    ( { model | state = Loading srvUrl (Just state) scrollTo }
+                    ( { model | state = LoadingThread srvUrl (Just state) scrollTo }
                     , Discourse.fetchTopic srvUrl (Discourse.Id parentTopicId) (Just ( parentPostNr, newTopicId )) GotTopic
                     )
 
@@ -247,34 +277,41 @@ update msg model =
                             Cmd.none
                     )
 
+        -- TODO: Verify affected forks
         ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
-            ( { model | state = Reader { state | topics = Dict.insert tid topic state.topics } }, Cmd.none )
+            let
+                topics =
+                    Dict.insert tid topic state.topics
+
+                affectedPost : Maybe Discourse.Post
+                affectedPost =
+                    Discourse.getPost 1 topic
+                        |> Maybe.andThen .parent
+                        |> Maybe.andThen (\( topicId, postNr ) -> Dict.get topicId state.topics |> Maybe.andThen (Discourse.getPost postNr))
+            in
+            ( { model
+                | state =
+                    Reader
+                        { state
+                            | topics =
+                                affectedPost
+                                    |> Maybe.map (\p -> Discourse.updatePost p.topicId p.seq (Discourse.verifyForks topics) topics)
+                                    |> Maybe.withDefault topics
+                        }
+              }
+            , Cmd.none
+            )
 
         ( Reader state, SetActiveFork ( onTopicId, onPostNr ) selectedFork ) ->
-            let
-                newState =
-                    { state
-                        | topics =
-                            state.topics
-                                |> Dict.update onTopicId
-                                    (Maybe.map
-                                        (\topic ->
-                                            { topic
-                                                | posts =
-                                                    topic.posts
-                                                        |> Dict.update onPostNr
-                                                            (Maybe.map
-                                                                (\post ->
-                                                                    { post | activeFork = selectedFork }
-                                                                )
-                                                            )
-                                            }
-                                        )
-                                    )
-                    }
-            in
-            ( { model | state = Reader newState }
-            , scrollToPost onTopicId onPostNr
+            ( { model
+                | state =
+                    Reader
+                        { state
+                            | topics = Discourse.updatePost onTopicId onPostNr (Discourse.setActiveFork selectedFork) state.topics
+                        }
+              }
+            , Cmd.none
+              --scrollToPost onTopicId onPostNr
             )
 
         ( _, GotTopic (Err _) ) ->
@@ -314,7 +351,7 @@ view model =
                 [ H.text s
                 ]
 
-            Loading _ _ _ ->
+            LoadingThread _ _ _ ->
                 [ H.text "Loading"
                 ]
 
@@ -332,18 +369,21 @@ view model =
                             _ ->
                                 []
 
-                    forkHref : ( Int, Int ) -> String
-                    forkHref ( fromTopicId, fromPostNr ) =
+                    forkHref : Int -> String
+                    forkHref fromTopicId =
                         Dict.get fromTopicId r.topics
                             |> Maybe.map .slug
-                            |> Maybe.map (\slug -> B.relative [ "#", "t", slug, String.fromInt fromTopicId, String.fromInt fromPostNr ] [])
+                            |> Maybe.map (\slug -> B.relative [ "#", "t", slug, String.fromInt fromTopicId, "1" ] [])
                             |> Maybe.withDefault ""
 
-                    forkLink : Discourse.Post -> ( Int, Int ) -> String -> H.Html Msg
+                    onClickLink msg =
+                        E.custom "click" (D.succeed { message = msg, stopPropagation = True, preventDefault = True })
+
+                    forkLink : Discourse.Post -> Int -> String -> H.Html Msg
                     forkLink p fork text =
                         let
                             activeFork =
-                                if fork == ( p.topicId, p.seq ) then
+                                if fork == p.topicId then
                                     Nothing
 
                                 else
@@ -352,7 +392,7 @@ view model =
                         H.a
                             [ A.target "_self"
                             , A.href (forkHref fork)
-                            , E.onClick (SetActiveFork ( p.topicId, p.seq ) activeFork)
+                            , onClickLink (SetActiveFork ( p.topicId, p.seq ) activeFork)
                             ]
                             [ H.text text
                             ]
@@ -360,22 +400,24 @@ view model =
                     postForkSelector p =
                         if not (List.isEmpty p.forks) then
                             p.forks
-                                |> List.indexedMap (\i fork -> forkLink p fork ("fork" ++ String.fromInt (i + 1)))
-                                |> List.append [ forkLink p ( p.topicId, p.seq ) "original" ]
+                                |> List.map Discourse.forkTopicId
+                                |> List.indexedMap (\i fromTopicId -> forkLink p fromTopicId ("fork" ++ String.fromInt (i + 1)))
+                                |> List.append [ forkLink p p.topicId "original" ]
                                 |> H.div []
 
                         else
                             H.div [] []
 
                     viewPost p =
-                        [ H.div [ A.id (domId p.topicId p.seq) ] (HtmlUtil.toVirtualDom p.body)
+                        [ H.article [ A.id (domId p.topicId p.seq) ] (HtmlUtil.toVirtualDom p.body)
                         , postForkSelector p
                         ]
                 in
                 case post1 of
                     Just p1 ->
-                        thread Set.empty p1
-                            |> List.concatMap viewPost
+                        [ H.section [] (List.concatMap viewPost (thread Set.empty p1))
+                        , H.footer [] []
+                        ]
 
                     Nothing ->
                         []
