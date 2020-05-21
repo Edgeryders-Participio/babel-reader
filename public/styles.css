@@ -22,15 +22,15 @@ body {
     overflow-y: scroll;
     min-width: 800px;
     width: 100%;
-    -webkit-transition: all 600ms;
-    -moz-transition: all 600ms;
-    -ms-transition: all 600ms;
-    -o-transition: all 600ms;
-    transition: all 600ms;
+}
+
+body, article {
+    transition: color 600ms;
+    transition: background 600ms;
 }
 
 section {
-    max-width: 600px;
+    max-width: 680px;
     min-height: 90%;
     margin: auto;
 }
@@ -47,6 +47,7 @@ article {
     font-size: 22px;
     display: block;
     word-wrap: break-word;
+    padding: 0 22px;
 }
 
 blockquote {
@@ -60,21 +61,30 @@ footer {
     height: 90%;
 }
 
+.author.visible {
+    right: 100%;
+    transition-delay: 0;
+}
+
 .author {
+    font-size: 70%;
     position: absolute;
-    right: 105%;
+    right: 75%;
+    max-width: 25%;
     min-width: max-content;
-    font: sans-serif;
+    font-family: Helvetica, sans-serif;
+    z-index: -1;
+    transition: right 0.5s;
 }
 
 /*  */
 
-.yin {
+.yin, .yin article {
     background: #fdfdfd;
     color: #111;
 }
 
-.yang {
+.yang, .yang article {
     background-color: #111;
     color: #fafafa;
 }
@@ -122,4 +132,49 @@ footer {
     100% {
         transform: rotate(360deg);
     }
+}
+
+/* Icomoon */
+
+@font-face {
+    font-family: 'icomoon';
+    src: url('fonts/icomoon.eot?fpy1mm');
+    src: url('fonts/icomoon.eot?fpy1mm#iefix') format('embedded-opentype'), url('fonts/icomoon.ttf?fpy1mm') format('truetype'), url('fonts/icomoon.woff?fpy1mm') format('woff'), url('fonts/icomoon.svg?fpy1mm#icomoon') format('svg');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+}
+
+[class^="icon-"], [class*=" icon-"] {
+    /* use !important to prevent issues with browser extensions that change fonts */
+    font-family: 'icomoon' !important;
+    speak: none;
+    font-style: normal;
+    font-weight: normal;
+    font-variant: normal;
+    text-transform: none;
+    line-height: 1;
+    /* Better Font Rendering =========== */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-drink:before {
+    content: "\e900";
+}
+
+.icon-drink1:before {
+    content: "\e901";
+}
+
+.icon-yinyang:before {
+    content: "\e902";
+}
+
+.icon-fork:before {
+    content: "\e903";
+}
+
+.icon-link:before {
+    content: "\e9cb";
 }

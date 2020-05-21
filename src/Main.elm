@@ -171,7 +171,10 @@ init flags url key =
       , url = url
       , state = state
       }
-    , cmd
+    , Cmd.batch
+        [ cmd
+        , setBodyClass "yin"
+        ]
     )
 
 
@@ -437,21 +440,34 @@ view model =
                         else
                             H.div [] []
 
-                    viewAuthor p =
+                    viewAuthor p visible =
                         H.div
-                            [ A.class "author" ]
+                            [ A.class "author"
+                            , if visible then
+                                A.class "visible"
+
+                              else
+                                A.class ""
+                            ]
                             [ H.text (Maybe.withDefault p.username p.name) ]
 
                     viewPost p =
+                        let
+                            showAuthor =
+                                Set.member ( p.topicId, p.seq ) r.showAuthor
+                        in
                         [ H.article
-                            [ A.id (domId p.topicId p.seq) ]
-                            (viewAuthor p :: HtmlUtil.toVirtualDom p.body)
+                            [ A.id (domId p.topicId p.seq)
+                            , E.onClick (SetShowAuthor p.topicId p.seq (not showAuthor))
+                            ]
+                            (viewAuthor p showAuthor :: HtmlUtil.toVirtualDom p.body)
                         , postForkSelector p
                         ]
                 in
                 case post1 of
                     Just p1 ->
-                        [ H.section [] (List.concatMap viewPost (thread Set.empty p1))
+                        [ H.span [ A.class "icon-yinyang", E.onClick ToggleYinYang ] []
+                        , H.section [] (List.concatMap viewPost (thread Set.empty p1))
                         , H.footer [] []
                         ]
 
