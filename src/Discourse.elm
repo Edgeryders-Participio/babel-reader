@@ -1,4 +1,4 @@
-module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, forkTopicId, getPost, isPotentialFork, isVerifiedFork, nextPost, parentTopicAndPostId, potentialForks, setActiveFork, topicAndPostIdFromUrl, updatePost, verifyForks)
+module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, firstUnavailableRoot, firstUnverifiedForkTopicId, forkTopicId, getPost, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, potentialForks, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifyForks)
 
 import Dict exposing (Dict)
 import Html.Parser
@@ -6,6 +6,7 @@ import Http
 import Json.Decode as D
 import Parser as P exposing ((|.), (|=))
 import Result exposing (Result)
+import Set
 import Url exposing (Url)
 import Url.Builder as B
 
@@ -30,6 +31,17 @@ type alias Post =
     , forks : List Fork
     , parent : Maybe ( Int, Int )
     }
+
+
+type alias Topic =
+    { title : String
+    , slug : String
+    , posts : Dict Int Post -- key is post sequence number
+    }
+
+
+type alias TopicResult =
+    Result Http.Error ( Int, Topic )
 
 
 isVerifiedFork : Fork -> Bool
@@ -94,11 +106,84 @@ verifyForks ts p =
     { p | forks = List.map verifyFork p.forks }
 
 
-type alias Topic =
-    { title : String
-    , slug : String
-    , posts : Dict Int Post -- key is post sequence number
-    }
+mapFirst : (a -> Maybe b) -> List a -> Maybe b
+mapFirst pred list =
+    case list of
+        x :: xs ->
+            case pred x of
+                (Just _) as res ->
+                    res
+
+                _ ->
+                    mapFirst pred xs
+
+        _ ->
+            Nothing
+
+
+mapFirstPost : (Post -> Maybe b) -> Topic -> Maybe b
+mapFirstPost pred topic =
+    mapFirst pred (Dict.values topic.posts)
+
+
+firstUnavailableRoot : Dict Int Topic -> Int -> Maybe ( Int, Int )
+firstUnavailableRoot topics topicId =
+    let
+        f visited root =
+            case ( Set.member (Tuple.first root) visited, parentTopicAndPostId (Tuple.first root) topics ) of
+                ( True, _ ) ->
+                    Nothing
+
+                ( False, Nothing ) ->
+                    Just root
+
+                ( False, Just parent ) ->
+                    f (Set.insert (Tuple.first root) visited) parent
+    in
+    Dict.get topicId topics
+        |> Maybe.andThen (getPost 1)
+        |> Maybe.andThen .parent
+        |> Maybe.andThen (f Set.empty)
+
+
+firstUnverifiedForkTopicId : Dict Int Topic -> Maybe ( Post, Int )
+firstUnverifiedForkTopicId topics =
+    let
+        verifiedFork : Post -> Fork -> Maybe ( Post, Int )
+        verifiedFork p f =
+            case f of
+                Verified id ->
+                    Just ( p, id )
+
+                _ ->
+                    Nothing
+    in
+    Dict.toList topics
+        |> mapFirst
+            (\( _, topic ) ->
+                topic.posts
+                    |> Dict.toList
+                    |> mapFirst (\( _, p ) -> mapFirst (verifiedFork p) p.forks)
+            )
+
+
+topicIdFromSlug : Dict Int Topic -> TopicId -> Maybe Int
+topicIdFromSlug topics id =
+    case id of
+        Slug slug ->
+            topics
+                |> Dict.toList
+                |> mapFirst
+                    (\( k, v ) ->
+                        if v.slug == slug then
+                            Just k
+
+                        else
+                            Nothing
+                    )
+
+        _ ->
+            Nothing
 
 
 topicAndPostIdFromUrl : Url -> String -> Maybe ( Int, Int )
@@ -247,10 +332,6 @@ decodeTopic srvUrl forkInfo =
         )
 
 
-type alias TopicResult =
-    Result Http.Error ( Int, Topic )
-
-
 nextPost : Post -> Dict Int Topic -> Maybe Post
 nextPost p topics =
     case p.activeFork of
@@ -266,6 +347,29 @@ nextPost p topics =
 getPost : Int -> Topic -> Maybe Post
 getPost n topic =
     Dict.get n topic.posts
+
+
+getRoot : Dict Int Topic -> Int -> Maybe Topic
+getRoot topics topicId =
+    let
+        f visited id =
+            let
+                t =
+                    Dict.get id topics
+
+                parent =
+                    t
+                        |> Maybe.andThen (getPost 1)
+                        |> Maybe.andThen .parent
+            in
+            case ( Set.member topicId visited, parent ) of
+                ( False, Just ( parentTopicId, _ ) ) ->
+                    f (Set.insert topicId visited) parentTopicId
+
+                _ ->
+                    t
+    in
+    f Set.empty topicId
 
 
 updatePost : Int -> Int -> (Post -> Post) -> Dict Int Topic -> Dict Int Topic
@@ -309,7 +413,3 @@ fetchTopic srvUrl tid forkInfo toMsg =
         { url = url
         , expect = Http.expectJson toMsg (D.map2 Tuple.pair (D.field "id" D.int) (decodeTopic srvUrl forkInfo))
         }
-
-
-
--- fetchPost
