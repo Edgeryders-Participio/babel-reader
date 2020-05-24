@@ -7,9 +7,7 @@
     outline: none;
 }
 
-html {
-    overflow: hidden;
-}
+html {}
 
 html, body {
     font-family: 'Lora', serif;
@@ -19,9 +17,12 @@ html, body {
 }
 
 body {
-    overflow-y: scroll;
     min-width: 800px;
     width: 100%;
+}
+
+a {
+    color: deepskyblue;
 }
 
 body, article {
@@ -89,7 +90,54 @@ footer {
     color: #fafafa;
 }
 
-/* Discord styling */
+/* Fork selector */
+
+.fork-selector {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.fork-list {
+    display: flex;
+}
+
+.fork-selector a {
+    flex: 0 0 40px;
+    height: 40px;
+    text-decoration: none;
+    outline: none;
+    color: inherit;
+    padding: auto;
+    display: inline-block;
+    font-family: Helvetica, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.fork-selector a:link, .fork-selector a:visited, .fork-selector a:focus {
+    text-decoration: none;
+}
+
+.fork-selector a.active {
+    background-color: deepskyblue;
+    color: white;
+    border-radius: 100%;
+}
+
+.fork-selector>div:first-child {
+    font-size: 2em;
+    justify-content: center;
+}
+
+.fork-selector>div:last-child {
+    font-size: 1.5em;
+    justify-content: center;
+}
+
+/* Discourse styling */
 
 .quote>.title {
     display: none;

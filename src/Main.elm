@@ -287,7 +287,7 @@ update msg model =
                             scrollToPost topicId postNr
 
                         _ ->
-                            Cmd.none
+                            scrollToPost state.activeTopic 1
                     )
 
         ( Reader state, GotTopic (Ok ( tid, topic )) ) ->
@@ -414,28 +414,49 @@ view model =
                     forkLink : Discourse.Post -> Int -> String -> H.Html Msg
                     forkLink p fork text =
                         let
-                            activeFork =
-                                if fork == p.topicId then
-                                    Nothing
+                            active =
+                                p.activeFork
+                                    |> Maybe.map ((==) fork)
+                                    |> Maybe.withDefault False
+
+                            forkTitle =
+                                Dict.get fork r.topics
+                                    |> Maybe.map .title
+                                    |> Maybe.withDefault (String.fromInt fork)
+
+                            ( setTo, tooltip ) =
+                                if not active then
+                                    ( Just fork, "Show fork '" ++ forkTitle ++ "'" )
 
                                 else
-                                    Just fork
+                                    ( Nothing, "Don't show a fork" )
                         in
                         H.a
                             [ A.target "_self"
                             , A.href (forkHref fork)
-                            , onClickLink (SetActiveFork p.topicId p.seq activeFork)
+                            , A.title tooltip
+                            , A.classList [ ( "active", active ) ]
+                            , onClickLink (SetActiveFork p.topicId p.seq setTo)
                             ]
                             [ H.text text
                             ]
 
                     postForkSelector p =
                         if not (List.isEmpty p.forks) then
-                            p.forks
-                                |> List.map Discourse.forkTopicId
-                                |> List.indexedMap (\i fromTopicId -> forkLink p fromTopicId ("fork" ++ String.fromInt (i + 1)))
-                                |> List.append [ forkLink p p.topicId "original" ]
-                                |> H.div []
+                            let
+                                forkHelp =
+                                    "Click on a number to shpw that fork. You can click on a selected fork again to see the original topic."
+
+                                linkList =
+                                    p.forks
+                                        |> List.map Discourse.forkTopicId
+                                        |> List.indexedMap (\i fromTopicId -> forkLink p fromTopicId (String.fromInt (i + 1)))
+                            in
+                            H.div
+                                [ A.class "fork-selector" ]
+                                [ H.div [] [ H.span [ A.class "icon-fork", A.title forkHelp ] [] ]
+                                , H.div [ A.class "fork-list" ] linkList
+                                ]
 
                         else
                             H.div [] []
