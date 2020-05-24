@@ -137,6 +137,17 @@ footer {
     justify-content: center;
 }
 
+/* Elm debugger */
+
+body>div:last-child {
+    transition: opacity 300ms;
+    opacity: 0;
+}
+
+body>div:last-child:hover {
+    opacity: 1;
+}
+
 /* Discourse styling */
 
 .quote>.title {
