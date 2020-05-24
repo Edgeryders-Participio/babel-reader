@@ -13,6 +13,7 @@
             "elm/json": "1.1.3",
             "elm/parser": "1.1.0",
             "elm/url": "1.0.0",
+            "elm-community/maybe-extra": "5.2.0",
             "jims/html-parser": "1.0.0",
             "mdgriffith/elm-animator": "1.0.1"
         },

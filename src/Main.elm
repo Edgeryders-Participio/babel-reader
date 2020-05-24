@@ -226,7 +226,7 @@ update msg model =
                             Reader.update readerMsg reader
 
                         finishedTopicId =
-                            Debug.log "finished" (Reader.hasFinishedLoading reader topicIdOrSlug)
+                            Debug.log "finished" (Reader.hasFinishedLoading newReader topicIdOrSlug)
 
                         scrollCmd =
                             case scrollTo of
@@ -235,6 +235,10 @@ update msg model =
 
                                 Nothing ->
                                     Cmd.none
+
+                        newReaderWithSelectedForks =
+                            finishedTopicId
+                            |> Maybe.map ()
                     in
                     case finishedTopicId of
                         Just topicId ->

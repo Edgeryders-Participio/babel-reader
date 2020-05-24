@@ -1,4 +1,4 @@
-module Reader exposing (Model, Msg, hasFinishedLoading, init, scrollToPost, topicTitle, update, view)
+module Reader exposing (Model, Msg, hasFinishedLoading, init, scrollToPost, topicTitle, update, view, selectForksForTopic)
 
 import Browser
 import Browser.Dom as Dom
@@ -12,6 +12,7 @@ import Html.Parser.Util as HtmlUtil
 import Http
 import Json.Decode as D
 import Maybe exposing (Maybe)
+import Maybe.Extra as MaybeEx
 import Parser as P exposing ((|.), (|=))
 import Set exposing (Set)
 import Task
@@ -90,6 +91,26 @@ init serverUrl toMsg topicId =
     ( Model model, cmd )
 
 
+selectForksForTopic : Model msg -> Int -> Model msg
+selectForksForTopic (Model model) topicId =
+    let
+        f visited id topics =
+            let
+                verifyAndSetActiveFork =
+                    Discourse.verifyForks topics >> Discourse.setActiveFork (Just id)
+                parent = Dict.get id topics 
+                    |> Maybe.andThen (Discourse.getPost 1)
+                    |> Maybe.andThen .parent
+            in
+            case parent of
+                Just ( parentTopicId, parentPostNr ) ->
+                    f (Set.insert parentTopicId visited) parentTopicId (Discourse.updatePost parentTopicId parentPostNr verifyAndSetActiveFork topics)
+                Nothing ->
+                    { model | topics = topics}
+    in
+    f Set.empty topicId model.topics
+
+
 update : Msg -> Model msg -> ( Model msg, Cmd msg )
 update msg (Model model) =
     mapModelCmd <|
@@ -99,34 +120,20 @@ update msg (Model model) =
                     newTopics =
                         Dict.insert newTopicId newTopic model.topics
 
-                    cmd =
-                        case Discourse.firstUnavailableRoot newTopics newTopicId of
-                            Just ( parentTopicId, _ ) ->
-                                if not (Dict.member parentTopicId newTopics) then
-                                    Discourse.fetchTopic model.baseUrl (Discourse.Id parentTopicId) Nothing GotTopic
+                    unavailableParent = Discourse.firstUnavailableRoot newTopics newTopicId
+                
+                    nextTopicId = 
+                        unavailableParent
+                        |> Maybe.map Tuple.first
+                        |> MaybeEx.orLazy (\() -> Discourse.firstUnverifiedForkTopicId newTopics |> Maybe.map Tuple.second)
 
-                                else
-                                    Cmd.none
+                    cmd = nextTopicId
+                        |> Maybe.map (\topicId -> Discourse.fetchTopic model.baseUrl (Discourse.Id topicId) Nothing GotTopic)
+                        |> Maybe.withDefault Cmd.none
 
-                            _ ->
-                                Cmd.none
-
-                    affectedPost : Maybe Discourse.Post
-                    affectedPost =
-                        Discourse.getPost 1 newTopic
-                            |> Maybe.andThen .parent
-                            |> Maybe.andThen (\( topicId, postNr ) -> Dict.get topicId model.topics |> Maybe.andThen (Discourse.getPost postNr))
-
-                    verifyAndSetActiveFork =
-                        Discourse.verifyForks newTopics >> Discourse.setActiveFork (Just newTopicId)
-
-                    newTopicsWithVerifiedForks =
-                        affectedPost
-                            |> Maybe.map (\p -> Discourse.updatePost p.topicId p.seq verifyAndSetActiveFork newTopics)
-                            |> Maybe.withDefault newTopics
                 in
                 ( { model
-                    | topics = newTopicsWithVerifiedForks
+                    | topics = newTopics
                   }
                 , cmd
                 )
