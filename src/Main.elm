@@ -399,7 +399,7 @@ view model =
                                 p :: thread (Set.insert ( p.topicId, p.seq ) visited) n
 
                             _ ->
-                                []
+                                [ p ]
 
                     forkHref : Int -> String
                     forkHref fromTopicId =
