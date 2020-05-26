@@ -1,4 +1,4 @@
-module Reader exposing (Model, Msg, hasFinishedLoading, init, scrollToPost, topicTitle, update, view, selectForksForTopic)
+port module Reader exposing (Model, Msg, Theme(..), applyTheme, hasFinishedLoading, init, scrollToPost, selectForksForTopic, topicTitle, update, view)
 
 import Browser
 import Browser.Dom as Dom
@@ -20,6 +20,24 @@ import Url
 import Url.Builder as B
 
 
+port setBodyClass : String -> Cmd msg
+
+
+type Theme
+    = Yin
+    | Yang
+
+
+applyTheme : Theme -> Cmd msg
+applyTheme theme =
+    case theme of
+        Yin ->
+            setBodyClass "yin"
+
+        Yang ->
+            setBodyClass "yang"
+
+
 type Model msg
     = Model (State msg)
 
@@ -29,7 +47,7 @@ type alias State msg =
     , baseUrl : Url.Url
     , topics : Dict Int Discourse.Topic
     , showAuthor : Set ( Int, Int )
-    , isLight : Bool
+    , theme : Theme
     }
 
 
@@ -46,7 +64,7 @@ hasFinishedLoading (Model model) topicIdOrSlug =
     Discourse.topicIdFromSlug model.topics topicIdOrSlug
         |> Maybe.andThen
             (\topicId ->
-                if Debug.log "unaviroot" (Discourse.firstUnavailableRoot model.topics topicId) == Nothing then
+                if Discourse.firstUnavailableRoot model.topics topicId == Nothing then
                     Just topicId
 
                 else
@@ -82,7 +100,7 @@ init : Url.Url -> (Msg -> msg) -> Discourse.TopicId -> ( Model msg, Cmd msg )
 init serverUrl toMsg topicId =
     let
         model =
-            State toMsg serverUrl Dict.empty Set.empty True
+            State toMsg serverUrl Dict.empty Set.empty Yin
 
         cmd =
             Discourse.fetchTopic serverUrl topicId Nothing GotTopic
@@ -98,17 +116,20 @@ selectForksForTopic (Model model) topicId =
             let
                 verifyAndSetActiveFork =
                     Discourse.verifyForks topics >> Discourse.setActiveFork (Just id)
-                parent = Dict.get id topics 
-                    |> Maybe.andThen (Discourse.getPost 1)
-                    |> Maybe.andThen .parent
+
+                parent =
+                    Dict.get id topics
+                        |> Maybe.andThen (Discourse.getPost 1)
+                        |> Maybe.andThen .parent
             in
             case parent of
                 Just ( parentTopicId, parentPostNr ) ->
                     f (Set.insert parentTopicId visited) parentTopicId (Discourse.updatePost parentTopicId parentPostNr verifyAndSetActiveFork topics)
+
                 Nothing ->
-                    { model | topics = topics}
+                    { model | topics = topics }
     in
-    f Set.empty topicId model.topics
+    Model (f Set.empty topicId model.topics)
 
 
 update : Msg -> Model msg -> ( Model msg, Cmd msg )
@@ -120,17 +141,18 @@ update msg (Model model) =
                     newTopics =
                         Dict.insert newTopicId newTopic model.topics
 
-                    unavailableParent = Discourse.firstUnavailableRoot newTopics newTopicId
-                
-                    nextTopicId = 
-                        unavailableParent
-                        |> Maybe.map Tuple.first
-                        |> MaybeEx.orLazy (\() -> Discourse.firstUnverifiedForkTopicId newTopics |> Maybe.map Tuple.second)
+                    unavailableParent =
+                        Discourse.firstUnavailableRoot newTopics newTopicId
 
-                    cmd = nextTopicId
-                        |> Maybe.map (\topicId -> Discourse.fetchTopic model.baseUrl (Discourse.Id topicId) Nothing GotTopic)
-                        |> Maybe.withDefault Cmd.none
+                    nextTopicId =
+                        MaybeEx.orLazy
+                            (Maybe.map Tuple.first unavailableParent)
+                            (\() -> Discourse.firstUnverifiedForkTopicId newTopics |> Maybe.map Tuple.second)
 
+                    cmd =
+                        nextTopicId
+                            |> Maybe.map (\topicId -> Discourse.fetchTopic model.baseUrl (Discourse.Id topicId) Nothing GotTopic)
+                            |> Maybe.withDefault Cmd.none
                 in
                 ( { model
                     | topics = newTopics
@@ -157,9 +179,19 @@ update msg (Model model) =
                 ( { model | showAuthor = newShowAuthors }, Cmd.none )
 
             ToggleYinYang ->
-                ( { model | isLight = not model.isLight }
-                , Cmd.none
-                  --applyBodyClass state
+                let
+                    newTheme =
+                        case model.theme of
+                            Yin ->
+                                Yang
+
+                            Yang ->
+                                Yin
+                in
+                ( { model
+                    | theme = newTheme
+                  }
+                , applyTheme newTheme
                 )
 
             GotTopic (Err _) ->
@@ -172,6 +204,9 @@ update msg (Model model) =
 view : Model msg -> Int -> List (Html msg)
 view (Model r) topicId =
     let
+        topic =
+            Dict.get topicId r.topics
+
         post1 =
             Discourse.getRoot r.topics topicId
                 |> Maybe.andThen (Discourse.getPost 1)
@@ -182,7 +217,7 @@ view (Model r) topicId =
                     p :: thread (Set.insert ( p.topicId, p.seq ) visited) n
 
                 _ ->
-                    []
+                    [ p ]
 
         forkHref : Int -> String
         forkHref fromTopicId =
@@ -246,13 +281,23 @@ view (Model r) topicId =
                 (viewAuthor p showAuthor :: HtmlUtil.toVirtualDom p.body)
             , postForkSelector p
             ]
+
+        controls =
+            H.div
+                [ A.class "controls" ]
+                [ H.span [ A.class "icon-yinyang", E.onClick (r.toMsg ToggleYinYang) ] []
+                ]
     in
-    case post1 of
-        Just p1 ->
-            [ H.span [ A.class "icon-yinyang", E.onClick (r.toMsg ToggleYinYang) ] []
-            , H.section [] (List.concatMap viewPost (thread Set.empty p1))
+    case ( topic, post1 ) of
+        ( Just t, Just p1 ) ->
+            [ controls
+            , H.section
+                []
+                (H.h2 [] [ H.text t.title ]
+                    :: List.concatMap viewPost (thread Set.empty p1)
+                )
             , H.footer [] []
             ]
 
-        Nothing ->
-            []
+        _ ->
+            [ controls ]

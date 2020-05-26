@@ -182,8 +182,8 @@ topicIdFromSlug topics id =
                             Nothing
                     )
 
-        _ ->
-            Nothing
+        Id i ->
+            Just i
 
 
 topicAndPostIdFromUrl : Url -> String -> Maybe ( Int, Int )

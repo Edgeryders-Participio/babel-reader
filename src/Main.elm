@@ -1,4 +1,4 @@
-port module Main exposing (Model, Msg, init, subscriptions, update, view)
+module Main exposing (Model, Msg, init, subscriptions, update, view)
 
 import Browser
 import Browser.Dom as Dom
@@ -18,9 +18,6 @@ import Set exposing (Set)
 import Task
 import Url
 import Url.Builder as B
-
-
-port setBodyClass : String -> Cmd msg
 
 
 main : Program D.Value Model Msg
@@ -159,7 +156,7 @@ init flags url key =
       }
     , Cmd.batch
         [ cmd
-        , setBodyClass "yin"
+        , Reader.applyTheme Reader.Yin
         ]
     )
 
@@ -226,7 +223,7 @@ update msg model =
                             Reader.update readerMsg reader
 
                         finishedTopicId =
-                            Debug.log "finished" (Reader.hasFinishedLoading newReader topicIdOrSlug)
+                            Reader.hasFinishedLoading newReader topicIdOrSlug
 
                         scrollCmd =
                             case scrollTo of
@@ -238,11 +235,12 @@ update msg model =
 
                         newReaderWithSelectedForks =
                             finishedTopicId
-                            |> Maybe.map ()
+                                |> Maybe.map (Reader.selectForksForTopic newReader)
+                                |> Maybe.withDefault newReader
                     in
                     case finishedTopicId of
                         Just topicId ->
-                            ( { model | state = Reader topicId newReader }
+                            ( { model | state = Reader topicId newReaderWithSelectedForks }
                             , Cmd.batch
                                 [ scrollCmd
                                 , cmd
