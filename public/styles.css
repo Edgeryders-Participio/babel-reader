@@ -7,21 +7,23 @@
     outline: none;
 }
 
-html {
-    overflow: hidden;
-}
+html {}
 
 html, body {
-    font-family: 'Lora', serif;
+    font-family: 'Times New Roman', serif;
     padding: 0;
     margin: 0;
     height: 100%;
 }
 
 body {
-    overflow-y: scroll;
     min-width: 800px;
     width: 100%;
+}
+
+a {
+    color: black;
+    text-decoration: underline;
 }
 
 body, article {
@@ -51,8 +53,6 @@ article {
 }
 
 blockquote {
-    border-left: 4px solid deepskyblue;
-    margin-left: -19px;
     padding-left: 15px;
     margin-right: 0;
 }
@@ -77,7 +77,7 @@ footer {
     transition: right 0.5s;
 }
 
-/*  */
+/* Theme sensitive stuff */
 
 .yin, .yin article {
     background: #fdfdfd;
@@ -89,7 +89,90 @@ footer {
     color: #fafafa;
 }
 
-/* Discord styling */
+.yin blockquote {
+    border-left: 4px solid #111;
+}
+
+.yang blockquote {
+    border-left: 4px solid #fafafa;
+}
+
+.yin a {
+    color: #111;
+}
+
+.yang a {
+    color: #fafafa;
+}
+
+.yin .fork-selector a.active {
+    background-color: #111;
+    color: #fafafa;
+}
+
+.yang .fork-selector a.active {
+    background-color: #fafafa;
+    color: #111;
+}
+
+/* Fork selector */
+
+.fork-selector {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.fork-list {
+    display: flex;
+}
+
+.fork-selector a {
+    flex: 0 0 40px;
+    height: 40px;
+    text-decoration: none;
+    outline: none;
+    color: inherit;
+    padding: auto;
+    display: inline-block;
+    font-family: Helvetica, sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.fork-selector a:link, .fork-selector a:visited, .fork-selector a:focus {
+    text-decoration: none;
+}
+
+.fork-selector a.active {
+    border-radius: 100%;
+}
+
+.fork-selector>div:first-child {
+    font-size: 2em;
+    justify-content: center;
+}
+
+.fork-selector>div:last-child {
+    font-size: 1.5em;
+    justify-content: center;
+}
+
+/* Controls */
+
+.controls {
+    position: fixed;
+    font-size: 1.3em;
+    padding: 0 .5em;
+}
+
+.controls>span {
+    cursor: pointer;
+}
+
+/* Discourse styling */
 
 .quote>.title {
     display: none;
