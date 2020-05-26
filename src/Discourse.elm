@@ -5,6 +5,7 @@ import Html.Parser
 import Http
 import Json.Decode as D
 import Parser as P exposing ((|.), (|=))
+import ParserUtil
 import Result exposing (Result)
 import Url exposing (Url)
 import Url.Builder as B
@@ -182,7 +183,7 @@ decodePost srvUrl forkInfo =
                     D.succeed nodes
 
                 Err e ->
-                    D.fail (P.deadEndsToString e)
+                    D.fail (ParserUtil.deadEndsToString e html)
 
         setActiveForkFromLoadTrail postNr =
             case forkInfo of
