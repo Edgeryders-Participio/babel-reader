@@ -1,4 +1,4 @@
-module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, firstUnavailableRoot, firstUnverifiedForkTopicId, forkTopicId, getPost, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, potentialForks, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifyForks)
+module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, firstUnavailableParentTopicId, firstUnverifiedForkTopicId, forkTopicId, getPost, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifiedForks, verifyForks)
 
 import Dict exposing (Dict)
 import Html.Parser
@@ -69,10 +69,10 @@ forkTopicId f =
             v
 
 
-potentialForks : Post -> List Int
-potentialForks p =
+verifiedForks : Post -> List Int
+verifiedForks p =
     p.forks
-        |> List.filter isPotentialFork
+        |> List.filter isVerifiedFork
         |> List.map forkTopicId
 
 
@@ -126,24 +126,33 @@ mapFirstPost pred topic =
     mapFirst pred (Dict.values topic.posts)
 
 
-firstUnavailableRoot : Dict Int Topic -> Int -> Maybe ( Int, Int )
-firstUnavailableRoot topics topicId =
+firstUnavailableParentTopicId : Dict Int Topic -> Int -> Maybe Int
+firstUnavailableParentTopicId topics topicId =
     let
-        f visited root =
-            case ( Set.member (Tuple.first root) visited, parentTopicAndPostId (Tuple.first root) topics ) of
-                ( True, _ ) ->
+        f visited t =
+            let
+                maybeTopic =
+                    Dict.get t topics
+
+                maybeParent =
+                    Maybe.andThen (getPost 1) maybeTopic
+                        |> Maybe.andThen .parent
+                        |> Maybe.map Tuple.first
+            in
+            case ( Set.member t visited, maybeTopic, maybeParent ) of
+                ( True, _, _ ) ->
                     Nothing
 
-                ( False, Nothing ) ->
-                    Just root
+                ( False, Nothing, _ ) ->
+                    Just t
 
-                ( False, Just parent ) ->
-                    f (Set.insert (Tuple.first root) visited) parent
+                ( False, Just _, Nothing ) ->
+                    Nothing
+
+                ( False, Just _, Just p ) ->
+                    f (Set.insert t visited) p
     in
-    Dict.get topicId topics
-        |> Maybe.andThen (getPost 1)
-        |> Maybe.andThen .parent
-        |> Maybe.andThen (f Set.empty)
+    f Set.empty topicId
 
 
 firstUnverifiedForkTopicId : Dict Int Topic -> Maybe ( Post, Int )

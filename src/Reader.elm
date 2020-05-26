@@ -64,7 +64,7 @@ hasFinishedLoading (Model model) topicIdOrSlug =
     Discourse.topicIdFromSlug model.topics topicIdOrSlug
         |> Maybe.andThen
             (\topicId ->
-                if Discourse.firstUnavailableRoot model.topics topicId == Nothing then
+                if Discourse.firstUnavailableParentTopicId model.topics topicId == Nothing then
                     Just topicId
 
                 else
@@ -122,11 +122,11 @@ selectForksForTopic (Model model) topicId =
                         |> Maybe.andThen (Discourse.getPost 1)
                         |> Maybe.andThen .parent
             in
-            case parent of
-                Just ( parentTopicId, parentPostNr ) ->
+            case ( Set.member id visited, parent ) of
+                ( False, Just ( parentTopicId, parentPostNr ) ) ->
                     f (Set.insert parentTopicId visited) parentTopicId (Discourse.updatePost parentTopicId parentPostNr verifyAndSetActiveFork topics)
 
-                Nothing ->
+                _ ->
                     { model | topics = topics }
     in
     Model (f Set.empty topicId model.topics)
@@ -142,11 +142,11 @@ update msg (Model model) =
                         Dict.insert newTopicId newTopic model.topics
 
                     unavailableParent =
-                        Discourse.firstUnavailableRoot newTopics newTopicId
+                        Discourse.firstUnavailableParentTopicId newTopics newTopicId
 
                     nextTopicId =
                         MaybeEx.orLazy
-                            (Maybe.map Tuple.first unavailableParent)
+                            unavailableParent
                             (\() -> Discourse.firstUnverifiedForkTopicId newTopics |> Maybe.map Tuple.second)
 
                     cmd =
@@ -227,33 +227,57 @@ view (Model r) topicId =
                 |> Maybe.withDefault ""
 
         onClickLink msg =
-            E.custom "click" (D.succeed { message = msg, stopPropagation = True, preventDefault = True })
+            E.custom "click" (D.succeed { message = r.toMsg msg, stopPropagation = True, preventDefault = True })
 
         forkLink : Discourse.Post -> Int -> String -> H.Html msg
         forkLink p fork text =
             let
-                activeFork =
-                    if fork == p.topicId then
-                        Nothing
+                active =
+                    p.activeFork
+                        |> Maybe.map ((==) fork)
+                        |> Maybe.withDefault False
+
+                forkTitle =
+                    Dict.get fork r.topics
+                        |> Maybe.map .title
+                        |> Maybe.withDefault (String.fromInt fork)
+
+                ( setTo, tooltip ) =
+                    if not active then
+                        ( Just fork, "Show fork '" ++ forkTitle ++ "'" )
 
                     else
-                        Just fork
+                        ( Nothing, "Don't show a fork" )
             in
             H.a
                 [ A.target "_self"
                 , A.href (forkHref fork)
-                , onClickLink (r.toMsg (SetActiveFork p.topicId p.seq activeFork))
+                , A.title tooltip
+                , A.classList [ ( "active", active ) ]
+                , onClickLink (SetActiveFork p.topicId p.seq setTo)
                 ]
                 [ H.text text
                 ]
 
         postForkSelector p =
-            if not (List.isEmpty p.forks) then
-                p.forks
-                    |> List.map Discourse.forkTopicId
-                    |> List.indexedMap (\i fromTopicId -> forkLink p fromTopicId ("fork" ++ String.fromInt (i + 1)))
-                    |> List.append [ forkLink p p.topicId "original" ]
-                    |> H.div []
+            let
+                verifiedForks =
+                    Discourse.verifiedForks p
+            in
+            if not (List.isEmpty verifiedForks) then
+                let
+                    forkHelp =
+                        "Click on a number to shpw that fork. You can click on a selected fork again to see the original topic."
+
+                    linkList =
+                        verifiedForks
+                            |> List.indexedMap (\i fromTopicId -> forkLink p fromTopicId (String.fromInt (i + 1)))
+                in
+                H.div
+                    [ A.class "fork-selector" ]
+                    [ H.div [] [ H.span [ A.class "icon-fork", A.title forkHelp ] [] ]
+                    , H.div [ A.class "fork-list" ] linkList
+                    ]
 
             else
                 H.div [] []
@@ -293,7 +317,7 @@ view (Model r) topicId =
             [ controls
             , H.section
                 []
-                (H.h2 [] [ H.text t.title ]
+                (H.h1 [] [ H.text t.title ]
                     :: List.concatMap viewPost (thread Set.empty p1)
                 )
             , H.footer [] []

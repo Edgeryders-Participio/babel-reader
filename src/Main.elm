@@ -225,14 +225,6 @@ update msg model =
                         finishedTopicId =
                             Reader.hasFinishedLoading newReader topicIdOrSlug
 
-                        scrollCmd =
-                            case scrollTo of
-                                Just ( scrollToTopicId, scrollToPostNr ) ->
-                                    Reader.scrollToPost newReader scrollToTopicId scrollToPostNr
-
-                                Nothing ->
-                                    Cmd.none
-
                         newReaderWithSelectedForks =
                             finishedTopicId
                                 |> Maybe.map (Reader.selectForksForTopic newReader)
@@ -240,10 +232,19 @@ update msg model =
                     in
                     case finishedTopicId of
                         Just topicId ->
+                            let
+                                scrollCmd =
+                                    case scrollTo of
+                                        Just ( scrollToTopicId, scrollToPostNr ) ->
+                                            Reader.scrollToPost newReaderWithSelectedForks scrollToTopicId scrollToPostNr
+
+                                        Nothing ->
+                                            Reader.scrollToPost newReaderWithSelectedForks topicId 1
+                            in
                             ( { model | state = Reader topicId newReaderWithSelectedForks }
                             , Cmd.batch
-                                [ scrollCmd
-                                , cmd
+                                [ cmd
+                                , scrollCmd
                                 ]
                             )
 
