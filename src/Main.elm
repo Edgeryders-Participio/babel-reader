@@ -243,8 +243,8 @@ update msg model =
                             in
                             ( { model | state = Reader topicId newReaderWithSelectedForks }
                             , Cmd.batch
-                                [ cmd
-                                , scrollCmd
+                                [ scrollCmd
+                                , cmd
                                 ]
                             )
 

@@ -114,8 +114,8 @@ selectForksForTopic (Model model) topicId =
     let
         f visited id topics =
             let
-                verifyAndSetActiveFork =
-                    Discourse.verifyForks topics >> Discourse.setActiveFork (Just id)
+                setActiveFork =
+                    Discourse.setActiveFork (Just id)
 
                 parent =
                     Dict.get id topics
@@ -124,7 +124,7 @@ selectForksForTopic (Model model) topicId =
             in
             case ( Set.member id visited, parent ) of
                 ( False, Just ( parentTopicId, parentPostNr ) ) ->
-                    f (Set.insert parentTopicId visited) parentTopicId (Discourse.updatePost parentTopicId parentPostNr verifyAndSetActiveFork topics)
+                    f (Set.insert parentTopicId visited) parentTopicId (Discourse.updatePost parentTopicId parentPostNr setActiveFork topics)
 
                 _ ->
                     { model | topics = topics }
@@ -140,6 +140,7 @@ update msg (Model model) =
                 let
                     newTopics =
                         Dict.insert newTopicId newTopic model.topics
+                            |> Discourse.verifyForks
 
                     unavailableParent =
                         Discourse.firstUnavailableParentTopicId newTopics newTopicId
@@ -293,13 +294,13 @@ view (Model r) topicId =
                 ]
                 [ H.text (Maybe.withDefault p.username p.name) ]
 
-        viewPost t p =
+        viewPost p1 p =
             let
                 showAuthor =
                     Set.member ( p.topicId, p.seq ) r.showAuthor
 
                 idAttr =
-                    if p.seq == t.firstPostNr then
+                    if topicId == p1.topicId && p1.seq == p.seq then
                         []
 
                     else
@@ -324,11 +325,20 @@ view (Model r) topicId =
     in
     case ( topic, post1 ) of
         ( Just t, Just p1 ) ->
+            let
+                headerId =
+                    if topicId == p1.topicId then
+                        -- Is first post at the beginning of the read topic or a parent?
+                        domId p1.topicId p1.seq
+
+                    else
+                        "thread-start"
+            in
             [ controls
             , H.section
                 []
-                (H.h1 [ A.id (domId p1.topicId p1.seq) ] [ H.text t.title ]
-                    :: List.concatMap (viewPost t) (thread Set.empty p1)
+                (H.h1 [ A.id headerId ] [ H.text t.title ]
+                    :: List.concatMap (viewPost p1) (thread Set.empty p1)
                 )
             , H.footer [] []
             ]

@@ -85,29 +85,42 @@ setActiveFork fork post =
     { post | activeFork = fork }
 
 
-verifyForks : Dict Int Topic -> Post -> Post
-verifyForks ts p =
+verifyPostForks : Dict Int Topic -> Post -> Post
+verifyPostForks ts p =
     let
         verifyFork f =
             case f of
                 Potential fid ->
                     Dict.get fid ts
                         |> Maybe.andThen getFirstPost
-                        |> Maybe.andThen .parent
                         |> Maybe.map
-                            (\parent ->
-                                if ( p.topicId, p.seq ) == parent then
-                                    Verified fid
+                            (\childp ->
+                                if Just ( p.topicId, p.seq ) == childp.parent then
+                                    Just (Verified fid)
 
                                 else
-                                    Potential fid
+                                    Nothing
                             )
-                        |> Maybe.withDefault f
+                        |> Maybe.withDefault (Just f)
 
                 _ ->
-                    f
+                    Just f
     in
-    { p | forks = List.map verifyFork p.forks }
+    { p | forks = List.filterMap verifyFork p.forks }
+
+
+verifyForks : Dict Int Topic -> Dict Int Topic
+verifyForks topics =
+    Dict.map
+        (\_ t ->
+            { t
+                | posts =
+                    Dict.map
+                        (\_ p -> verifyPostForks topics p)
+                        t.posts
+            }
+        )
+        topics
 
 
 mapFirst : (a -> Maybe b) -> List a -> Maybe b
@@ -162,10 +175,10 @@ firstUnavailableParentTopicId topics topicId =
 firstUnverifiedForkTopicId : Dict Int Topic -> Maybe ( Post, Int )
 firstUnverifiedForkTopicId topics =
     let
-        verifiedFork : Post -> Fork -> Maybe ( Post, Int )
-        verifiedFork p f =
+        potentialFork : Post -> Fork -> Maybe ( Post, Int )
+        potentialFork p f =
             case f of
-                Verified id ->
+                Potential id ->
                     Just ( p, id )
 
                 _ ->
@@ -176,7 +189,7 @@ firstUnverifiedForkTopicId topics =
             (\( _, topic ) ->
                 topic.posts
                     |> Dict.toList
-                    |> mapFirst (\( _, p ) -> mapFirst (verifiedFork p) p.forks)
+                    |> mapFirst (\( _, p ) -> mapFirst (potentialFork p) p.forks)
             )
 
 
