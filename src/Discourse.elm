@@ -1,9 +1,11 @@
-module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, firstUnavailableParentTopicId, firstUnverifiedForkTopicId, forkTopicId, getPost, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifiedForks, verifyForks)
+module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, firstUnavailableParentTopicId, firstUnverifiedForkTopicId, forkTopicId, getFirstPost, getPostNr, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifiedForks, verifyForks)
 
+import Array exposing (Array)
 import Dict exposing (Dict)
 import Html.Parser
 import Http
 import Json.Decode as D
+import Maybe.Extra as MaybeEx
 import Parser as P exposing ((|.), (|=))
 import Result exposing (Result)
 import Set
@@ -36,7 +38,9 @@ type alias Post =
 type alias Topic =
     { title : String
     , slug : String
-    , posts : Dict Int Post -- key is post sequence number
+    , posts : Dict Int Post -- Key is the post seq number
+    , sequence : Dict Int (Maybe Int) -- Next post linkage for each post
+    , firstPostNr : Int
     }
 
 
@@ -88,7 +92,7 @@ verifyForks ts p =
             case f of
                 Potential fid ->
                     Dict.get fid ts
-                        |> Maybe.andThen (getPost 1)
+                        |> Maybe.andThen getFirstPost
                         |> Maybe.andThen .parent
                         |> Maybe.map
                             (\parent ->
@@ -135,7 +139,7 @@ firstUnavailableParentTopicId topics topicId =
                     Dict.get t topics
 
                 maybeParent =
-                    Maybe.andThen (getPost 1) maybeTopic
+                    Maybe.andThen getFirstPost maybeTopic
                         |> Maybe.andThen .parent
                         |> Maybe.map Tuple.first
             in
@@ -328,34 +332,60 @@ decodePost srvUrl forkInfo =
 
 decodeTopic : Url -> Maybe ( Int, Int ) -> D.Decoder Topic
 decodeTopic srvUrl forkInfo =
-    D.map3 Topic
+    let
+        makeTopic title slug posts =
+            let
+                postBySeq =
+                    posts
+                        |> Array.indexedMap (\i p -> ( p.seq, p ))
+                        |> Array.toList
+                        |> Dict.fromList
+
+                nextSeqNr =
+                    posts
+                        |> Array.indexedMap (\i p -> ( p.seq, Array.get (i + 1) posts |> Maybe.map .seq ))
+                        |> Array.toList
+                        |> Dict.fromList
+
+                firstPostNr =
+                    Array.get 0 posts |> Maybe.map .seq |> Maybe.withDefault 1
+            in
+            Topic title slug postBySeq nextSeqNr firstPostNr
+    in
+    D.map3 makeTopic
         (D.field "title" D.string)
         (D.field "slug" D.string)
         (D.at [ "post_stream", "posts" ]
-            (D.map2 Tuple.pair
-                (D.field "post_number" D.int)
-                (decodePost srvUrl forkInfo)
-                |> D.list
-            )
-            |> D.map Dict.fromList
+            (D.array (decodePost srvUrl forkInfo))
         )
 
 
 nextPost : Post -> Dict Int Topic -> Maybe Post
 nextPost p topics =
+    let
+        next t =
+            Dict.get p.seq t.sequence
+                |> MaybeEx.join
+                |> Maybe.andThen (\nr -> Dict.get nr t.posts)
+    in
     case p.activeFork of
         Just tid ->
             Dict.get tid topics
-                |> Maybe.andThen (getPost 1)
+                |> Maybe.andThen getFirstPost
 
         _ ->
             Dict.get p.topicId topics
-                |> Maybe.andThen (getPost (p.seq + 1))
+                |> Maybe.andThen next
 
 
-getPost : Int -> Topic -> Maybe Post
-getPost n topic =
-    Dict.get n topic.posts
+getFirstPost : Topic -> Maybe Post
+getFirstPost topic =
+    getPostNr topic.firstPostNr topic
+
+
+getPostNr : Int -> Topic -> Maybe Post
+getPostNr nr topic =
+    Dict.get nr topic.posts
 
 
 getRoot : Dict Int Topic -> Int -> Maybe Topic
@@ -368,7 +398,7 @@ getRoot topics topicId =
 
                 parent =
                     t
-                        |> Maybe.andThen (getPost 1)
+                        |> Maybe.andThen getFirstPost
                         |> Maybe.andThen .parent
             in
             case ( Set.member topicId visited, parent ) of
@@ -389,7 +419,7 @@ updatePost topicId postNr f topics =
 parentTopicAndPostId : Int -> Dict Int Topic -> Maybe ( Int, Int )
 parentTopicAndPostId tid ts =
     Dict.get tid ts
-        |> Maybe.andThen (getPost 1)
+        |> Maybe.andThen getFirstPost
         |> Maybe.andThen .parent
 
 

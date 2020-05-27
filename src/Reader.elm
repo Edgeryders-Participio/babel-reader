@@ -119,7 +119,7 @@ selectForksForTopic (Model model) topicId =
 
                 parent =
                     Dict.get id topics
-                        |> Maybe.andThen (Discourse.getPost 1)
+                        |> Maybe.andThen Discourse.getFirstPost
                         |> Maybe.andThen .parent
             in
             case ( Set.member id visited, parent ) of
@@ -209,7 +209,7 @@ view (Model r) topicId =
 
         post1 =
             Discourse.getRoot r.topics topicId
-                |> Maybe.andThen (Discourse.getPost 1)
+                |> Maybe.andThen Discourse.getFirstPost
 
         thread visited p =
             case ( Set.member ( p.topicId, p.seq ) visited, Discourse.nextPost p r.topics ) of
