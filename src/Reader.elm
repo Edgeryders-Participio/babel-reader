@@ -293,15 +293,25 @@ view (Model r) topicId =
                 ]
                 [ H.text (Maybe.withDefault p.username p.name) ]
 
-        viewPost p =
+        viewPost t p =
             let
                 showAuthor =
                     Set.member ( p.topicId, p.seq ) r.showAuthor
+
+                idAttr =
+                    if p.seq == t.firstPostNr then
+                        []
+
+                    else
+                        [ A.id (domId p.topicId p.seq) ]
             in
             [ H.article
-                [ A.id (domId p.topicId p.seq)
-                , E.onClick (r.toMsg (SetShowAuthor p.topicId p.seq (not showAuthor)))
-                ]
+                (List.append
+                    idAttr
+                    [ A.class "post"
+                    , E.onClick (r.toMsg (SetShowAuthor p.topicId p.seq (not showAuthor)))
+                    ]
+                )
                 (viewAuthor p showAuthor :: HtmlUtil.toVirtualDom p.body)
             , postForkSelector p
             ]
@@ -317,8 +327,8 @@ view (Model r) topicId =
             [ controls
             , H.section
                 []
-                (H.h1 [] [ H.text t.title ]
-                    :: List.concatMap viewPost (thread Set.empty p1)
+                (H.h1 [ A.id (domId p1.topicId p1.seq) ] [ H.text t.title ]
+                    :: List.concatMap (viewPost t) (thread Set.empty p1)
                 )
             , H.footer [] []
             ]
