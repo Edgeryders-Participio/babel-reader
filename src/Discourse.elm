@@ -459,7 +459,7 @@ fetchTopic srvUrl tid forkInfo toMsg =
                 s
 
         url =
-            B.crossOrigin srvUrlStr [ "t", idOrSlug ++ ".json" ] []
+            B.crossOrigin srvUrlStr [ "t", idOrSlug ++ ".json" ] [ B.string "print" "true" ]
     in
     Http.get
         { url = url
