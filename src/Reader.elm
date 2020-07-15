@@ -292,7 +292,7 @@ view (Model r) topicId =
                   else
                     A.class ""
                 ]
-                [ H.text (Maybe.withDefault p.username p.name) ]
+                [ H.text p.username ]
 
         viewPost p1 p =
             let
