@@ -58,7 +58,7 @@ article {
     font-size: 22px;
     display: block;
     word-wrap: break-word;
-    padding: 0 22px;
+    padding: 0 22px 22px 22px;
 }
 
 blockquote {
