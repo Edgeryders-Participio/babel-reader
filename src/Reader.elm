@@ -52,7 +52,8 @@ type alias State msg =
 
 
 type Msg
-    = GotTopic (Result Http.Error ( Int, Discourse.Topic ))
+    = GotTopic (Result Http.Error ( Int, Discourse.Topic, List Int ))
+    | GotTopicPosts ( Int, Discourse.Topic ) (Result Http.Error ( Int, List Discourse.Post ))
     | SetActiveFork Int Int (Maybe Int)
     | SetShowAuthor Int Int Bool
     | ToggleYinYang
@@ -103,7 +104,7 @@ init serverUrl toMsg topicId =
             State toMsg serverUrl Dict.empty Set.empty Yin
 
         cmd =
-            Discourse.fetchTopic serverUrl topicId Nothing GotTopic
+            Discourse.fetchTopic serverUrl topicId GotTopic
                 |> Cmd.map toMsg
     in
     ( Model model, cmd )
@@ -132,34 +133,59 @@ selectForksForTopic (Model model) topicId =
     Model (f Set.empty topicId model.topics)
 
 
+finalizeReceivedTopic topics baseUrl newTopicId newTopic =
+    let
+        newTopics =
+            Dict.insert newTopicId newTopic topics
+                |> Discourse.verifyForks
+
+        unavailableParent =
+            Discourse.firstUnavailableParentTopicId newTopics newTopicId
+
+        nextTopicId =
+            MaybeEx.orLazy
+                unavailableParent
+                (\() -> Discourse.firstUnverifiedForkTopicId newTopics |> Maybe.map Tuple.second)
+
+        cmd =
+            nextTopicId
+                |> Maybe.map (\topicId -> Discourse.fetchTopic baseUrl (Discourse.Id topicId) GotTopic)
+                |> Maybe.withDefault Cmd.none
+    in
+    ( newTopics, cmd )
+
+
 update : Msg -> Model msg -> ( Model msg, Cmd msg )
 update msg (Model model) =
     mapModelCmd <|
         case msg of
-            GotTopic (Ok ( newTopicId, newTopic )) ->
+            GotTopicPosts ( topicId, topic ) (Ok ( _, posts )) ->
                 let
-                    newTopics =
-                        Dict.insert newTopicId newTopic model.topics
-                            |> Discourse.verifyForks
-
-                    unavailableParent =
-                        Discourse.firstUnavailableParentTopicId newTopics newTopicId
-
-                    nextTopicId =
-                        MaybeEx.orLazy
-                            unavailableParent
-                            (\() -> Discourse.firstUnverifiedForkTopicId newTopics |> Maybe.map Tuple.second)
-
-                    cmd =
-                        nextTopicId
-                            |> Maybe.map (\topicId -> Discourse.fetchTopic model.baseUrl (Discourse.Id topicId) Nothing GotTopic)
-                            |> Maybe.withDefault Cmd.none
+                    ( newTopics, cmd ) =
+                        finalizeReceivedTopic
+                            model.topics
+                            model.baseUrl
+                            topicId
+                            (Discourse.addPosts topic posts)
                 in
-                ( { model
-                    | topics = newTopics
-                  }
-                , cmd
-                )
+                ( { model | topics = newTopics }, cmd )
+
+            GotTopic (Ok ( topicId, topic, missingPostIds )) ->
+                let
+                    ( newTopics, cmd ) =
+                        if List.isEmpty missingPostIds then
+                            finalizeReceivedTopic model.topics model.baseUrl topicId topic
+
+                        else
+                            ( model.topics
+                            , Discourse.fetchPosts
+                                model.baseUrl
+                                topicId
+                                missingPostIds
+                                (GotTopicPosts ( topicId, topic ))
+                            )
+                in
+                ( { model | topics = newTopics }, cmd )
 
             SetActiveFork onTopicId onPostNr selectedForkTopicId ->
                 ( { model
@@ -198,6 +224,9 @@ update msg (Model model) =
             GotTopic (Err _) ->
                 ( model, Cmd.none )
 
+            GotTopicPosts _ (Err _) ->
+                ( model, Cmd.none )
+
             NoOp ->
                 ( model, Cmd.none )
 
@@ -224,38 +253,39 @@ view (Model r) topicId =
         forkHref fromTopicId =
             Dict.get fromTopicId r.topics
                 |> Maybe.map .slug
-                |> Maybe.map (\slug -> B.relative [ "#", "t", slug, String.fromInt fromTopicId, "1" ] [])
+                |> Maybe.map (\slug -> B.relative [ "#", "t", slug, String.fromInt fromTopicId ] [])
                 |> Maybe.withDefault ""
 
         onClickLink msg =
             E.custom "click" (D.succeed { message = r.toMsg msg, stopPropagation = True, preventDefault = True })
 
-        forkLink : Discourse.Post -> Int -> String -> H.Html msg
+        forkLink : Discourse.Post -> Maybe Int -> String -> H.Html msg
         forkLink p fork text =
             let
                 active =
-                    p.activeFork
-                        |> Maybe.map ((==) fork)
-                        |> Maybe.withDefault False
+                    p.activeFork == fork
 
-                forkTitle =
-                    Dict.get fork r.topics
-                        |> Maybe.map .title
-                        |> Maybe.withDefault (String.fromInt fork)
+                ( href, forkTitle ) =
+                    case fork of
+                        Just fromTopicId ->
+                            ( forkHref fromTopicId
+                            , Dict.get fromTopicId r.topics
+                                |> Maybe.map .title
+                                |> Maybe.withDefault (String.fromInt fromTopicId)
+                            )
 
-                ( setTo, tooltip ) =
-                    if not active then
-                        ( Just fork, "Show fork '" ++ forkTitle ++ "'" )
+                        _ ->
+                            ( forkHref p.topicId, "<original>" )
 
-                    else
-                        ( Nothing, "Don't show a fork" )
+                tooltip =
+                    "Show fork '" ++ forkTitle ++ "'"
             in
             H.a
                 [ A.target "_self"
-                , A.href (forkHref fork)
+                , A.href href
                 , A.title tooltip
                 , A.classList [ ( "active", active ) ]
-                , onClickLink (SetActiveFork p.topicId p.seq setTo)
+                , onClickLink (SetActiveFork p.topicId p.seq fork)
                 ]
                 [ H.text text
                 ]
@@ -268,11 +298,12 @@ view (Model r) topicId =
             if not (List.isEmpty verifiedForks) then
                 let
                     forkHelp =
-                        "Click on a number to shpw that fork. You can click on a selected fork again to see the original topic."
+                        "Click on a number to select a fork."
 
                     linkList =
                         verifiedForks
-                            |> List.indexedMap (\i fromTopicId -> forkLink p fromTopicId (String.fromInt (i + 1)))
+                            |> List.indexedMap (\i fromTopicId -> forkLink p (Just fromTopicId) (String.fromInt (i + 1)))
+                            |> (::) (forkLink p Nothing "0")
                 in
                 H.div
                     [ A.class "fork-selector" ]

@@ -1,4 +1,4 @@
-module Discourse exposing (Fork, Post, Topic, TopicId(..), TopicResult, fetchTopic, firstUnavailableParentTopicId, firstUnverifiedForkTopicId, forkTopicId, getFirstPost, getPostNr, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifiedForks, verifyForks)
+module Discourse exposing (Fork, Post, Topic, TopicId(..), addPosts, fetchPosts, fetchTopic, firstUnavailableParentTopicId, firstUnverifiedForkTopicId, forkTopicId, getFirstPost, getPostNr, getRoot, isPotentialFork, isVerifiedFork, mapFirstPost, nextPost, parentTopicAndPostId, setActiveFork, topicAndPostIdFromUrl, topicIdFromSlug, updatePost, verifiedForks, verifyForks)
 
 import Array exposing (Array)
 import Dict exposing (Dict)
@@ -40,12 +40,8 @@ type alias Topic =
     , slug : String
     , posts : Dict Int Post -- Key is the post seq number
     , sequence : Dict Int (Maybe Int) -- Next post linkage for each post
-    , firstPostNr : Int
+    , firstPostNr : Maybe Int
     }
-
-
-type alias TopicResult =
-    Result Http.Error ( Int, Topic )
 
 
 isVerifiedFork : Fork -> Bool
@@ -284,8 +280,8 @@ extractAndFilterForkLink srvUrl nodes =
     f nodes
 
 
-decodePost : Url -> Maybe ( Int, Int ) -> D.Decoder Post
-decodePost srvUrl forkInfo =
+decodePost : Url -> D.Decoder Post
+decodePost srvUrl =
     let
         htmlString html =
             case Html.Parser.run html of
@@ -294,18 +290,6 @@ decodePost srvUrl forkInfo =
 
                 Err e ->
                     D.fail (P.deadEndsToString e)
-
-        setActiveForkFromLoadTrail postNr =
-            case forkInfo of
-                Just ( postIdToFork, forksToTopicId ) ->
-                    if postNr == postIdToFork then
-                        Just forksToTopicId
-
-                    else
-                        Nothing
-
-                _ ->
-                    Nothing
 
         forkUrl s =
             case topicAndPostIdFromUrl srvUrl s of
@@ -326,9 +310,7 @@ decodePost srvUrl forkInfo =
                     (D.field "name" (D.maybe D.string))
                     (D.field "username" D.string)
                     (D.succeed html)
-                    (D.field "post_number" D.int
-                        |> D.map setActiveForkFromLoadTrail
-                    )
+                    (D.succeed Nothing)
                     (D.oneOf
                         -- TODO: Use pipeline parser with optional here instead
                         [ (D.field "link_counts" <| D.list <| D.field "url" <| D.andThen forkUrl <| D.string)
@@ -343,34 +325,77 @@ decodePost srvUrl forkInfo =
             )
 
 
-decodeTopic : Url -> Maybe ( Int, Int ) -> D.Decoder Topic
-decodeTopic srvUrl forkInfo =
+addPosts : Topic -> List Post -> Topic
+addPosts topic posts =
     let
-        makeTopic title slug posts =
-            let
-                postBySeq =
-                    posts
-                        |> Array.indexedMap (\i p -> ( p.seq, p ))
-                        |> Array.toList
-                        |> Dict.fromList
+        postsBySeq =
+            posts
+                |> List.map (\p -> ( p.seq, p ))
+                |> Dict.fromList
 
-                nextSeqNr =
-                    posts
-                        |> Array.indexedMap (\i p -> ( p.seq, Array.get (i + 1) posts |> Maybe.map .seq ))
-                        |> Array.toList
-                        |> Dict.fromList
+        newPostsById =
+            Dict.union topic.posts postsBySeq
 
-                firstPostNr =
-                    Array.get 0 posts |> Maybe.map .seq |> Maybe.withDefault 1
-            in
-            Topic title slug postBySeq nextSeqNr firstPostNr
+        ( nextSeqNr, firstPostNr ) =
+            buildPostSequence newPostsById
     in
-    D.map3 makeTopic
+    { topic
+        | posts = newPostsById
+        , sequence = nextSeqNr
+        , firstPostNr = firstPostNr
+    }
+
+
+buildPostSequence : Dict Int Post -> ( Dict Int (Maybe Int), Maybe Int )
+buildPostSequence posts =
+    let
+        orderedPosts =
+            posts
+                |> Dict.values
+                |> Array.fromList
+
+        nextSeqNr =
+            orderedPosts
+                |> Array.indexedMap (\i p -> ( p.seq, Array.get (i + 1) orderedPosts |> Maybe.map .seq ))
+                |> Array.toList
+                |> Dict.fromList
+
+        firstPostNr =
+            Array.get 0 orderedPosts |> Maybe.map .seq
+    in
+    ( nextSeqNr, firstPostNr )
+
+
+decodeTopic : Url -> D.Decoder ( Topic, List Int )
+decodeTopic srvUrl =
+    let
+        decodeIdListToDict decoder =
+            D.map2 Tuple.pair (D.field "id" D.int) decoder
+                |> D.list
+                |> D.map Dict.fromList
+
+        makeTopic : String -> String -> Dict Int Post -> List Int -> ( Topic, List Int )
+        makeTopic title slug postById stream =
+            let
+                ( _, missingIds ) =
+                    List.partition (\id -> Dict.member id postById) stream
+
+                postBySeq =
+                    postById
+                        |> Dict.values
+                        |> List.map (\p -> ( p.seq, p ))
+                        |> Dict.fromList
+
+                ( nextSeqNr, firstPostNr ) =
+                    buildPostSequence postBySeq
+            in
+            ( Topic title slug postBySeq nextSeqNr firstPostNr, missingIds )
+    in
+    D.map4 makeTopic
         (D.field "title" D.string)
         (D.field "slug" D.string)
-        (D.at [ "post_stream", "posts" ]
-            (D.array (decodePost srvUrl forkInfo))
-        )
+        (D.at [ "post_stream", "posts" ] (decodeIdListToDict (decodePost srvUrl)))
+        (D.at [ "post_stream", "stream" ] (D.list D.int))
 
 
 nextPost : Post -> Dict Int Topic -> Maybe Post
@@ -393,7 +418,7 @@ nextPost p topics =
 
 getFirstPost : Topic -> Maybe Post
 getFirstPost topic =
-    getPostNr topic.firstPostNr topic
+    Maybe.andThen (\nr -> getPostNr nr topic) topic.firstPostNr
 
 
 getPostNr : Int -> Topic -> Maybe Post
@@ -436,8 +461,39 @@ parentTopicAndPostId tid ts =
         |> Maybe.andThen .parent
 
 
-fetchTopic : Url -> TopicId -> Maybe ( Int, Int ) -> (TopicResult -> msg) -> Cmd msg
-fetchTopic srvUrl tid forkInfo toMsg =
+fetchPosts : Url -> Int -> List Int -> (Result Http.Error ( Int, List Post ) -> msg) -> Cmd msg
+fetchPosts srvUrl topicId ids toMsg =
+    let
+        query =
+            ids
+                |> List.map (B.int "post_ids[]")
+
+        url =
+            B.crossOrigin (srvUrlStr srvUrl) [ "t", String.fromInt topicId, "posts" ++ ".json" ] query
+
+        decodePostList =
+            D.at [ "post_stream", "posts" ] (D.list (decodePost srvUrl))
+    in
+    Http.get
+        { url = url
+        , expect = Http.expectJson toMsg (D.map2 Tuple.pair (D.succeed topicId) decodePostList)
+        }
+
+
+srvUrlStr srvUrl =
+    let
+        s =
+            Url.toString srvUrl
+    in
+    if String.endsWith "/" s then
+        String.dropRight 1 s
+
+    else
+        s
+
+
+fetchTopic : Url -> TopicId -> (Result Http.Error ( Int, Topic, List Int ) -> msg) -> Cmd msg
+fetchTopic srvUrl tid toMsg =
     let
         idOrSlug =
             case tid of
@@ -447,21 +503,17 @@ fetchTopic srvUrl tid forkInfo toMsg =
                 Id i ->
                     String.fromInt i
 
-        srvUrlStr =
-            let
-                s =
-                    Url.toString srvUrl
-            in
-            if String.endsWith "/" s then
-                String.dropRight 1 s
-
-            else
-                s
-
         url =
-            B.crossOrigin srvUrlStr [ "t", idOrSlug ++ ".json" ] [ B.string "print" "true" ]
+            B.crossOrigin (srvUrlStr srvUrl) [ "t", idOrSlug ++ ".json" ] []
+
+        thruple a bc =
+            let
+                ( b, c ) =
+                    bc
+            in
+            ( a, b, c )
     in
     Http.get
         { url = url
-        , expect = Http.expectJson toMsg (D.map2 Tuple.pair (D.field "id" D.int) (decodeTopic srvUrl forkInfo))
+        , expect = Http.expectJson toMsg (D.map2 thruple (D.field "id" D.int) (decodeTopic srvUrl))
         }
